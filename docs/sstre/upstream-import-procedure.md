@@ -1,7 +1,6 @@
 # Upstream import procedure (proposal)
 
-Status: **Proposal — requires ADR-005 accepted and explicit owner approval
-before any step that writes to the remote.** Nothing here has been executed.
+Status: **Superseded for publication by SSTRE ADR-0008 (2026-11-27).** SSTRE-Engine publishes only its own patches against pinned upstream commits, and no upstream history is pushed. The local part of option B was executed on 2026-11-27: `upstream/classic-vk-main` and `upstream/rt-main` exist as local branches and are protected by a pre-push hook. The rest of this document is kept for reference and for local development.
 Date: 2026-11-27.
 
 ## Goal
