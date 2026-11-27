@@ -1,0 +1,4 @@
+# SPDX-FileCopyrightText: 2026 Handelsonderneming S.D. Broekhoven, trading as ITEagle Europe
+# SPDX-License-Identifier: GPL-2.0-only
+/build/
+__pycache__/

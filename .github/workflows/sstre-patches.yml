@@ -1,0 +1,89 @@
+# SPDX-FileCopyrightText: 2026 Handelsonderneming S.D. Broekhoven, trading as ITEagle Europe
+# SPDX-License-Identifier: GPL-2.0-only
+name: sstre-patches
+
+# ADR-0008 patch series (backlog POC-27):
+#  - tests: synthetic unit tests of tools/sstre_patches.py (no network), plus
+#    the ADR-0008 content check of patches/ with the umbrella validator's
+#    forbidden lists (umbrella checked out at a PINNED commit, read as data).
+#  - apply: fetch each upstream at its pinned commit from GitHub (depth 1),
+#    verify the SHA and apply every series with the tool. No build, no game
+#    data, no secrets; upstream content stays on the runner.
+# --max-patch-kib 1280: raised from the 1024 default for the vendored zstd
+# decompressor in patches/rtgl1/0003 (SSTRE EXP-010). Review before raising.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SSTRE_UMBRELLA_COMMIT: 2ffcf1c9ad16a93b9269f9a4484477f313e08774
+  SSTRE_MAX_PATCH_KIB: "1280"
+
+jobs:
+  tests:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+          persist-credentials: false
+
+      - name: Check out umbrella validator (pinned commit)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Handelsonderneming-S-D-Broekhoven/SSTRE
+          ref: ${{ env.SSTRE_UMBRELLA_COMMIT }}
+          path: umbrella
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Unit tests (synthetic git repositories, no network)
+        working-directory: repo
+        env:
+          SSTRE_UMBRELLA_VALIDATOR: ${{ github.workspace }}/umbrella/scripts/validate_repo.py
+        run: python -m unittest discover -s tools/tests -v
+
+      - name: ADR-0008 content check of patches/
+        working-directory: repo
+        run: >-
+          python tools/sstre_patches.py check
+          --validator "$GITHUB_WORKSPACE/umbrella/scripts/validate_repo.py"
+          --max-patch-kib "$SSTRE_MAX_PATCH_KIB"
+
+  apply:
+    needs: tests
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Fetch pinned upstream commits (depth 1) and verify SHAs
+        run: python tools/sstre_patches.py --cache "$RUNNER_TEMP/upstream-cache" fetch
+
+      - name: Apply all patch series
+        run: python tools/sstre_patches.py --cache "$RUNNER_TEMP/upstream-cache" apply --out "$RUNNER_TEMP/work"

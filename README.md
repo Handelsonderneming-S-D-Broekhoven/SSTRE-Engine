@@ -10,11 +10,12 @@ This repository does **not** contain a copy of the engine. Per [SSTRE ADR-0008](
 
 - [`upstream.lock.json`](upstream.lock.json): the upstream engine repositories and the exact commits SSTRE builds on:
   - **SeriousSamClassic-VK**, primary baseline;
-  - **Serious-Engine-RT**, secondary upstream and the source of the ray-tracing backend.
-- `patches/<upstream>/NNNN-*.patch`: SSTRE's own changes, applied in order with `git am`. This directory is created with the first patch.
+  - **Serious-Engine-RT**, secondary upstream and the source of the ray-tracing backend;
+  - **RayTracedGL1** v1.1.0, a dependency of the ray-tracing backend.
+- [`patches/<upstream>/NNNN-*.patch`](patches/): SSTRE's own changes, applied in order with [`tools/sstre_patches.py`](tools/sstre_patches.py) (see [patch tooling](docs/sstre/patch-tooling.md)).
 - [`docs/sstre/`](docs/sstre/): integration notes and build instructions.
 
-Upstream code is always fetched from its original host at the pinned commit. Both pinned commits are also archived by Software Heritage (SWHIDs are in the lock file).
+Upstream code is always fetched from its original host at the pinned commit. All pinned commits are also archived by Software Heritage (SWHIDs are in the lock file).
 
 ## Licensing
 

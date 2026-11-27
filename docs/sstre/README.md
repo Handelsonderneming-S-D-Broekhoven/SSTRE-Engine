@@ -29,7 +29,7 @@ Upstream engine code keeps its own license, copyright headers and notices, verba
 
 ## Upstream and patches
 
-See [upstream-import-procedure.md](./upstream-import-procedure.md). Its history-import options are **superseded for publication** by ADR-0008. They remain valid only for building local development branches.
+Patch series are produced, checked and applied with `tools/sstre_patches.py`: see [patch-tooling.md](./patch-tooling.md). For local branches see [upstream-import-procedure.md](./upstream-import-procedure.md). Its history-import options are **superseded for publication** by ADR-0008. They remain valid only for building local development branches.
 
 ## Planned contents of this directory (after import)
 
