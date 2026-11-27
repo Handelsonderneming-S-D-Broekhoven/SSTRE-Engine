@@ -33,11 +33,8 @@ or any live inference service. Interfaces: SSTRE
 
 ## Licensing
 
-Upstream engine code keeps its own license, copyright headers and notices,
-verbatim. SSTRE does not relicense engine code. The license that will apply is
-whatever the chosen upstream uses (being audited in SSTRE
-`docs/research/RD-007-licensing.md`); no license file is added here before the
-import.
+Upstream engine code keeps its own license, copyright headers and notices, verbatim. SSTRE never relicenses engine code. The engine is **`GPL-2.0-only`** (all candidate upstreams; audited in SSTRE `docs/research/RD-007-licensing.md`), and SSTRE modifications to it are contributed under the same `GPL-2.0-only` terms, with the notice `Copyright © 2026 Handelsonderneming S.D. Broekhoven, trading as ITEagle Europe` added for our own changes only. Existing third-party copyright notices are preserved unchanged. No SSTRE license file is added before the upstream import, because the imported upstream `LICENSE` applies.
+
 
 ## Importing upstream
 
