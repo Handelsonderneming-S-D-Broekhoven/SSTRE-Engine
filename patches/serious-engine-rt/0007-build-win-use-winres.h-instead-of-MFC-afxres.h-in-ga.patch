@@ -1,0 +1,61 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Fri, 27 Nov 2026 19:59:01 +0100
+Subject: [PATCH] build(win): use winres.h instead of MFC afxres.h in
+ game/server .rc
+
+The reference PC's VS 2022 17.5 install has ATL but no MFC headers or
+libraries for v143. SeriousSamTFE and DedicatedServer do not use MFC;
+their resource scripts only need the standard Windows resource
+definitions, which the Windows SDK's winres.h provides.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Sources/DedicatedServer/DedicatedServer.rc | 4 ++--
+ Sources/SeriousSam/SeriousSam.rc           | 4 ++--
+ 2 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/Sources/DedicatedServer/DedicatedServer.rc b/Sources/DedicatedServer/DedicatedServer.rc
+index 7117aaf33fe2f64670e38b544194996e11528e3a..55aa5c52b1c79f36d5797bb202e9109ebfdb92cd 100644
+--- a/Sources/DedicatedServer/DedicatedServer.rc
++++ b/Sources/DedicatedServer/DedicatedServer.rc
+@@ -7,7 +7,7 @@
+ //
+ // Generated from the TEXTINCLUDE 2 resource.
+ //
+-#include "afxres.h"
++#include "winres.h"
+ 
+ /////////////////////////////////////////////////////////////////////////////
+ #undef APSTUDIO_READONLY_SYMBOLS
+@@ -43,7 +43,7 @@ END
+ 
+ 2 TEXTINCLUDE DISCARDABLE 
+ BEGIN
+-    "#include ""afxres.h""\r\n"
++    "#include ""winres.h""\r\n"
+     "\0"
+ END
+ 
+diff --git a/Sources/SeriousSam/SeriousSam.rc b/Sources/SeriousSam/SeriousSam.rc
+index 7f2af501b35e4f852216599b20a00827fdf88277..457e83f37b4af6f0316a6b84528a5cb599e5d410 100644
+--- a/Sources/SeriousSam/SeriousSam.rc
++++ b/Sources/SeriousSam/SeriousSam.rc
+@@ -7,7 +7,7 @@
+ //
+ // Generated from the TEXTINCLUDE 2 resource.
+ //
+-#include "afxres.h"
++#include "winres.h"
+ 
+ /////////////////////////////////////////////////////////////////////////////
+ #undef APSTUDIO_READONLY_SYMBOLS
+@@ -34,7 +34,7 @@ END
+ 
+ 2 TEXTINCLUDE DISCARDABLE 
+ BEGIN
+-    "#include ""afxres.h""\r\n"
++    "#include ""winres.h""\r\n"
+     "\0"
+ END
+ 

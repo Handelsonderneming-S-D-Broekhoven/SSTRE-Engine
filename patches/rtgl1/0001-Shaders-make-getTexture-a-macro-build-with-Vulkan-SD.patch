@@ -1,0 +1,37 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Fri, 27 Nov 2026 19:50:20 +0100
+Subject: [PATCH] Shaders: make getTexture a macro (build with Vulkan SDK
+ 1.4.363 glslc)
+
+glslang shipped with Vulkan SDK 1.4.363.0 (shaderc v2026.4) rejects
+functions returning a sampler when generating SPIR-V:
+  ShaderCommonGLSLFunc.h:70: error: 'return' : sampler or image cannot
+  be used as return type when generating SPIR-V
+This broke 8 shaders (incl. RtRaygen*, RtAlphaTest, RsRasterizer*).
+Backport of upstream RTGL1 commit a2ad71e (Friedrich Vock, 2023-11-26,
+'Make getTexture a macro'). getTexture() has no callers at v1.1.0.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Source/Shaders/ShaderCommonGLSLFunc.h | 5 +----
+ 1 file changed, 1 insertion(+), 4 deletions(-)
+
+diff --git a/Source/Shaders/ShaderCommonGLSLFunc.h b/Source/Shaders/ShaderCommonGLSLFunc.h
+index 5b6a82e13176fda73b1a06d808153a549335a967..d940526343a92a3dfb0452070db7f1d361518e37 100644
+--- a/Source/Shaders/ShaderCommonGLSLFunc.h
++++ b/Source/Shaders/ShaderCommonGLSLFunc.h
+@@ -65,10 +65,7 @@ layout(
+     binding = BINDING_TEXTURES)
+     uniform sampler2D globalTextures[];
+ 
+-sampler2D getTexture(uint textureIndex)
+-{
+-    return globalTextures[nonuniformEXT(textureIndex)];
+-}
++#define getTexture(textureIndex) globalTextures[nonuniformEXT(textureIndex)]
+ 
+ vec4 getTextureSample(uint textureIndex, const vec2 texCoord)
+ {
+
+base-commit: b1eb3d8ca3fe75f6f4dda16a53aeb99ea613aead

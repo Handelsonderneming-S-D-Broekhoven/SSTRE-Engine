@@ -1,0 +1,26 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Fri, 27 Nov 2026 21:26:34 +0100
+Subject: [PATCH] zstd: record the checksum of the committed (LF) zstddeclib.c
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Source/zstd/VENDORED.txt | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/Source/zstd/VENDORED.txt b/Source/zstd/VENDORED.txt
+index e9f49f599bd57f9fbec9355fe0edb028300b492e..7c2cce30894879c8d80e29f1f2b26ff156ebe197 100644
+--- a/Source/zstd/VENDORED.txt
++++ b/Source/zstd/VENDORED.txt
+@@ -14,7 +14,10 @@ Files:
+                    cd build/single_file_libs
+                    python combine.py -r ../../lib -x legacy/zstd_legacy.h \
+                           -o zstddeclib.c zstddeclib-in.c
+-                 SHA-256 06401e2078c8111752bc9ec351b995026c467a4b5df1f1602dbad0b5de72384b
++                 (Python 3.10, Windows). SHA-256 of the committed (LF) file:
++                 5eb38abe0a7eea13674b312a006df72002d4192f0f0b4d09e6f03fb927a1f3d0
++                 (06401e2078c8111752bc9ec351b995026c467a4b5df1f1602dbad0b5de72384b
++                 with the CRLF line endings combine.py wrote on Windows)
+                  (decompression only, legacy formats excluded, ZSTD_DISABLE_ASM)
+   zstd.h, zstd_errors.h, LICENSE, COPYING   copied unmodified from lib/ and the archive root
+ 

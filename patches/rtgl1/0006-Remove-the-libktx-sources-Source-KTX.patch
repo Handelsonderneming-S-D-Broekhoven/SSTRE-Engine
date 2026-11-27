@@ -1,0 +1,307 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Fri, 27 Nov 2026 21:26:08 +0100
+Subject: [PATCH] Remove the libktx sources (Source/KTX)
+
+The directory is no longer referenced by the build since the switch to
+Ktx2Reader. Removing it takes the Apache-2.0 KTX-Software code out of
+the tree. Tools/GenerateBlueNoiseKTX2.cpp, a standalone tool that is not
+built by CMake, still uses the libktx API and would need KTX-Software
+installed separately.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Source/KTX/.reuse/dep5                        |   177 -
+ Source/KTX/LICENSE.md                         |    36 -
+ Source/KTX/LICENSES/Apache-2.0.txt            |   208 -
+ Source/KTX/LICENSES/BSD-1-Clause.txt          |    17 -
+ Source/KTX/LICENSES/BSD-2-Clause.txt          |    23 -
+ Source/KTX/LICENSES/BSD-3-Clause.txt          |    27 -
+ Source/KTX/LICENSES/BSL-1.0.txt               |    23 -
+ Source/KTX/LICENSES/CC-BY-3.0.txt             |    59 -
+ Source/KTX/LICENSES/CC-BY-4.0.txt             |    96 -
+ Source/KTX/LICENSES/CC0-1.0.txt               |    29 -
+ Source/KTX/LICENSES/GPL-2.0-or-later.txt      |   103 -
+ .../LicenseRef-Cesium-Trademark-Terms.txt     |    39 -
+ Source/KTX/LICENSES/LicenseRef-ETCSLA.txt     |   109 -
+ .../KTX/LICENSES/LicenseRef-HI-Trademark.txt  |     5 -
+ Source/KTX/LICENSES/LicenseRef-Kodak.txt      |     7 -
+ Source/KTX/LICENSES/LicenseRef-PNGSuite.txt   |    14 -
+ Source/KTX/LICENSES/MIT.txt                   |    19 -
+ Source/KTX/LICENSES/Zlib.txt                  |    20 -
+ Source/KTX/NOTICE.md                          |     1 -
+ Source/KTX/README.md                          |   105 -
+ Source/KTX/include/ktx.h                      |  1508 -
+ Source/KTX/include/ktxvulkan.h                |   179 -
+ Source/KTX/lib/basis_sgd.h                    |    85 -
+ Source/KTX/lib/basisu/zstd/LICENSE            |    30 -
+ Source/KTX/lib/basisu/zstd/zstd.c             | 38717 ----------------
+ Source/KTX/lib/basisu/zstd/zstd.h             |  2450 -
+ Source/KTX/lib/checkheader.c                  |   259 -
+ Source/KTX/lib/dfdutils/.reuse/dep5           |     7 -
+ Source/KTX/lib/dfdutils/CODE_OF_CONDUCT.adoc  |    11 -
+ Source/KTX/lib/dfdutils/LICENSE.adoc          |    16 -
+ .../KTX/lib/dfdutils/LICENSES/Apache-2.0.txt  |   208 -
+ Source/KTX/lib/dfdutils/LICENSES/MIT.txt      |    19 -
+ Source/KTX/lib/dfdutils/README.adoc           |    81 -
+ Source/KTX/lib/dfdutils/createdfd.c           |   641 -
+ Source/KTX/lib/dfdutils/dfd.h                 |   170 -
+ Source/KTX/lib/dfdutils/interpretdfd.c        |   345 -
+ Source/KTX/lib/dfdutils/queries.c             |   146 -
+ Source/KTX/lib/dfdutils/vk2dfd.c              |    34 -
+ Source/KTX/lib/dfdutils/vk2dfd.inl            |   337 -
+ Source/KTX/lib/filestream.c                   |   390 -
+ Source/KTX/lib/filestream.h                   |    28 -
+ Source/KTX/lib/formatsize.h                   |    58 -
+ Source/KTX/lib/gl_format.h                    |  2652 --
+ Source/KTX/lib/gl_funclist.inl                |    51 -
+ Source/KTX/lib/gl_funcs.h                     |    64 -
+ Source/KTX/lib/hashlist.c                     |   595 -
+ Source/KTX/lib/internalexport.def             |    46 -
+ Source/KTX/lib/internalexport_write.def       |    29 -
+ Source/KTX/lib/ktxint.h                       |   267 -
+ Source/KTX/lib/libktx.gypi                    |   481 -
+ Source/KTX/lib/mainpage.md                    |   319 -
+ Source/KTX/lib/memstream.c                    |   581 -
+ Source/KTX/lib/memstream.h                    |    44 -
+ Source/KTX/lib/mkvkformatfiles                |   155 -
+ Source/KTX/lib/stream.h                       |   127 -
+ Source/KTX/lib/swap.c                         |    57 -
+ Source/KTX/lib/texture.c                      |   906 -
+ Source/KTX/lib/texture.h                      |   108 -
+ Source/KTX/lib/texture1.c                     |  1377 -
+ Source/KTX/lib/texture1.h                     |    46 -
+ Source/KTX/lib/texture2.c                     |  2357 -
+ Source/KTX/lib/texture2.h                     |    68 -
+ Source/KTX/lib/texture_funcs.inl              |    74 -
+ Source/KTX/lib/uthash.h                       |   942 -
+ Source/KTX/lib/vk_format.h                    |  1388 -
+ Source/KTX/lib/vk_funclist.inl                |    44 -
+ Source/KTX/lib/vk_funcs.c                     |   182 -
+ Source/KTX/lib/vk_funcs.h                     |    93 -
+ Source/KTX/lib/vkformat_enum.h                |   300 -
+ Source/KTX/lib/vkloader.c                     |  1555 -
+ Source/KTX/other_include/KHR/khr_df.h         |   619 -
+ Source/KTX/other_include/KHR/khrplatform.h    |   290 -
+ Source/KTX/other_include/zstd_errors.h        |    93 -
+ 73 files changed, 62746 deletions(-)
+
+diff --git a/Source/KTX/.reuse/dep5 b/Source/KTX/.reuse/dep5
+deleted file mode 100644
+index 728e6d9f3d080579b2d48df82f73efd164913b1c..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/LICENSE.md b/Source/KTX/LICENSE.md
+deleted file mode 100644
+index 7b6d05fe48078bd0f9450f896c7fac39c1e720d5..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/LICENSES/Apache-2.0.txt b/Source/KTX/LICENSES/Apache-2.0.txt
+deleted file mode 100644
+index 4ed90b952240cb872426e64da9e41252cc61ae3e..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/LICENSES/BSD-1-Clause.txt b/Source/KTX/LICENSES/BSD-1-Clause.txt
+deleted file mode 100644
+index bff05ecdd095ee058e65238569db6f55767586e2..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/LICENSES/BSD-2-Clause.txt b/Source/KTX/LICENSES/BSD-2-Clause.txt
+deleted file mode 100644
+index cdf557b1faa53a416ab3d3d7dd8aa2494ac368ef..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/LICENSES/BSD-3-Clause.txt b/Source/KTX/LICENSES/BSD-3-Clause.txt
+deleted file mode 100644
+index 9cc70bc715926337223abcb93bb4e244b9be9296..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/LICENSES/BSL-1.0.txt b/Source/KTX/LICENSES/BSL-1.0.txt
+deleted file mode 100644
+index 36b7cd93cdfbac762f5be4c6ce276df2ea6305c2..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/LICENSES/CC-BY-3.0.txt b/Source/KTX/LICENSES/CC-BY-3.0.txt
+deleted file mode 100644
+index 55be1f3a2a0ea8db908b99e48ffcabfa6a12a5ff..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/LICENSES/CC-BY-4.0.txt b/Source/KTX/LICENSES/CC-BY-4.0.txt
+deleted file mode 100644
+index ea24cac71b90913587cdea570d55da7aad3d9436..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/LICENSES/CC0-1.0.txt b/Source/KTX/LICENSES/CC0-1.0.txt
+deleted file mode 100644
+index 730f2e55b120fe8dbb682ad2037934743b95c53a..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/LICENSES/GPL-2.0-or-later.txt b/Source/KTX/LICENSES/GPL-2.0-or-later.txt
+deleted file mode 100644
+index 607deb345c8b284293c27505920cb0332a5ecf43..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/LICENSES/LicenseRef-Cesium-Trademark-Terms.txt b/Source/KTX/LICENSES/LicenseRef-Cesium-Trademark-Terms.txt
+deleted file mode 100644
+index 06d1b8542e0fcb11c72fbb0dbf12ad88d6e30ed5..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/LICENSES/LicenseRef-ETCSLA.txt b/Source/KTX/LICENSES/LicenseRef-ETCSLA.txt
+deleted file mode 100644
+index d47217afdb0f1157da90ea7530e66ae9d65a8a90..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/LICENSES/LicenseRef-HI-Trademark.txt b/Source/KTX/LICENSES/LicenseRef-HI-Trademark.txt
+deleted file mode 100644
+index 0ccddc993f9a9263f95d14abf35f7fcb54d018ed..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/LICENSES/LicenseRef-Kodak.txt b/Source/KTX/LICENSES/LicenseRef-Kodak.txt
+deleted file mode 100644
+index 9a7f26b46a7fd83333fbb35ab367fe7de62c4186..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/LICENSES/LicenseRef-PNGSuite.txt b/Source/KTX/LICENSES/LicenseRef-PNGSuite.txt
+deleted file mode 100644
+index 1bb39a97e57f8abcc8609040bf1ef4487fff56cb..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/LICENSES/MIT.txt b/Source/KTX/LICENSES/MIT.txt
+deleted file mode 100644
+index 204b93da48d02900098ced21c54062ffbff36b9c..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/LICENSES/Zlib.txt b/Source/KTX/LICENSES/Zlib.txt
+deleted file mode 100644
+index 508a9b5b969ac70b57601f6962b2bc8b40129af3..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/NOTICE.md b/Source/KTX/NOTICE.md
+deleted file mode 100644
+index f0c4298632f957385e61afc91647f6faeb78e804..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/README.md b/Source/KTX/README.md
+deleted file mode 100644
+index 397e42c641a1246e2c3dba10ba72f64ba0b9d881..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/include/ktx.h b/Source/KTX/include/ktx.h
+deleted file mode 100644
+index 950bb94ebe22505170af94b7a7a6ba7067eb300d..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/include/ktxvulkan.h b/Source/KTX/include/ktxvulkan.h
+deleted file mode 100644
+index 24235db62d3c06eb7ea9f3d6c63de4e76da9994d..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/basis_sgd.h b/Source/KTX/lib/basis_sgd.h
+deleted file mode 100644
+index 6c55909652934c6464be83a81e93476537841170..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/basisu/zstd/LICENSE b/Source/KTX/lib/basisu/zstd/LICENSE
+deleted file mode 100644
+index a793a802892567f17d464a831e2e531dc8833f55..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/basisu/zstd/zstd.c b/Source/KTX/lib/basisu/zstd/zstd.c
+deleted file mode 100644
+index eaf137383561ec3854c4c6d1e3d28ddcba89fd7a..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/basisu/zstd/zstd.h b/Source/KTX/lib/basisu/zstd/zstd.h
+deleted file mode 100644
+index 222339d71a3dda8c868dffca2899713f4dc01c70..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/checkheader.c b/Source/KTX/lib/checkheader.c
+deleted file mode 100644
+index 07e5d919c8cab545ac16309fcad3bdfcd008a6db..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/dfdutils/.reuse/dep5 b/Source/KTX/lib/dfdutils/.reuse/dep5
+deleted file mode 100644
+index 93e175139394af0ac9dca86de506fd5e87625666..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/dfdutils/CODE_OF_CONDUCT.adoc b/Source/KTX/lib/dfdutils/CODE_OF_CONDUCT.adoc
+deleted file mode 100644
+index 8e909d99bd08651ad52639deb819134f19f809b5..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/dfdutils/LICENSE.adoc b/Source/KTX/lib/dfdutils/LICENSE.adoc
+deleted file mode 100644
+index fa17887c541604f117b13cadd8a7c217f9839810..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/dfdutils/LICENSES/Apache-2.0.txt b/Source/KTX/lib/dfdutils/LICENSES/Apache-2.0.txt
+deleted file mode 100644
+index 4ed90b952240cb872426e64da9e41252cc61ae3e..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/dfdutils/LICENSES/MIT.txt b/Source/KTX/lib/dfdutils/LICENSES/MIT.txt
+deleted file mode 100644
+index 204b93da48d02900098ced21c54062ffbff36b9c..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/dfdutils/README.adoc b/Source/KTX/lib/dfdutils/README.adoc
+deleted file mode 100644
+index b08d5d06af19b01a27ea82aa8b1b3e626eee9683..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/dfdutils/createdfd.c b/Source/KTX/lib/dfdutils/createdfd.c
+deleted file mode 100644
+index 211723c981b3145a3f4d2ae8ad15d0d1d1e1bddc..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/dfdutils/dfd.h b/Source/KTX/lib/dfdutils/dfd.h
+deleted file mode 100644
+index 3ba0249dbb2d6133904a739a5060f52da5b18812..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/dfdutils/interpretdfd.c b/Source/KTX/lib/dfdutils/interpretdfd.c
+deleted file mode 100644
+index 273410a18ccd0b1ca9e66e849a95b1ad7db36a2c..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/dfdutils/queries.c b/Source/KTX/lib/dfdutils/queries.c
+deleted file mode 100644
+index 07d78e73ab9727a76eee12300930e36ef8d9e152..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/dfdutils/vk2dfd.c b/Source/KTX/lib/dfdutils/vk2dfd.c
+deleted file mode 100644
+index d476ced1be5e8865f1ecd0bae7ea6d693ceab8fa..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/dfdutils/vk2dfd.inl b/Source/KTX/lib/dfdutils/vk2dfd.inl
+deleted file mode 100644
+index 01ac473bb4492fd114ee57bcb63423e9de96b310..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/filestream.c b/Source/KTX/lib/filestream.c
+deleted file mode 100644
+index 70d0854b4dcdc84fca0a471638f74dc78d233c63..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/filestream.h b/Source/KTX/lib/filestream.h
+deleted file mode 100644
+index ada5c653347238e2a481687a97fbfc79fbdb9fda..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/formatsize.h b/Source/KTX/lib/formatsize.h
+deleted file mode 100644
+index 7112a3a90d720abc45a49ff3c72d2c77d2125202..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/gl_format.h b/Source/KTX/lib/gl_format.h
+deleted file mode 100644
+index ba8306f94641bc94bdbee5ea30ca01c8e131c930..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/gl_funclist.inl b/Source/KTX/lib/gl_funclist.inl
+deleted file mode 100644
+index 0338268ff7a6296dadb6342819bbdc3f94b3d69d..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/gl_funcs.h b/Source/KTX/lib/gl_funcs.h
+deleted file mode 100644
+index 0c8f6ccea58d38ca9a616ea5929703415ddd68ae..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/hashlist.c b/Source/KTX/lib/hashlist.c
+deleted file mode 100644
+index 64e361d85fd5454ec15c781322fed73584c82f2b..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/internalexport.def b/Source/KTX/lib/internalexport.def
+deleted file mode 100644
+index 7488d7c7102728344138460ddfaa367071c076b3..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/internalexport_write.def b/Source/KTX/lib/internalexport_write.def
+deleted file mode 100644
+index b47a709caf824753b5af32b8f6f80ff93f7516f6..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/ktxint.h b/Source/KTX/lib/ktxint.h
+deleted file mode 100644
+index c74e1404aab3fa9e40158f0a2c24ff2cbc477568..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/libktx.gypi b/Source/KTX/lib/libktx.gypi
+deleted file mode 100644
+index a5a5a512d57b6f1d9fb140e1aea759340bbbdb5b..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/mainpage.md b/Source/KTX/lib/mainpage.md
+deleted file mode 100644
+index cdf8bc438d4f7b97d64ad87595dbfb836b61e8a6..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/memstream.c b/Source/KTX/lib/memstream.c
+deleted file mode 100644
+index cd745a4217d74ef7d448d30ecc60d3f8321308a5..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/memstream.h b/Source/KTX/lib/memstream.h
+deleted file mode 100644
+index f75fac64fea34301732b0f8c3facba318c60071d..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/mkvkformatfiles b/Source/KTX/lib/mkvkformatfiles
+deleted file mode 100644
+index 254b06cd941356c91ec00138f1e93c5dfff75de8..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/stream.h b/Source/KTX/lib/stream.h
+deleted file mode 100644
+index f062247c68cbaccda857d677525941cb63450002..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/swap.c b/Source/KTX/lib/swap.c
+deleted file mode 100644
+index 3fdeb4f3a46222f32b0287f2a3428b2864126a0d..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/texture.c b/Source/KTX/lib/texture.c
+deleted file mode 100644
+index e53a34e87a4b7ce767d544a28744a4b0be77c9b8..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/texture.h b/Source/KTX/lib/texture.h
+deleted file mode 100644
+index eee9c3cf254d36a3447fe5dd13cfe78ffcb20aec..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/texture1.c b/Source/KTX/lib/texture1.c
+deleted file mode 100644
+index dffbe9a2249e780e4e0732f5b73b801a8d652feb..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/texture1.h b/Source/KTX/lib/texture1.h
+deleted file mode 100644
+index 95734cc5f74660e15abb623840d5a4e6b53b3aec..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/texture2.c b/Source/KTX/lib/texture2.c
+deleted file mode 100644
+index ad7c573a0d3f89f43e659b3c4f9812346869e1b6..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/texture2.h b/Source/KTX/lib/texture2.h
+deleted file mode 100644
+index 14e4115ecf7622731e2070d48959e9033418fe73..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/texture_funcs.inl b/Source/KTX/lib/texture_funcs.inl
+deleted file mode 100644
+index f1effc2df80edd3624ce1b3543b2f9b1463612dd..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/uthash.h b/Source/KTX/lib/uthash.h
+deleted file mode 100644
+index aa4729027cbd531042a38575bae7a88e03144df3..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/vk_format.h b/Source/KTX/lib/vk_format.h
+deleted file mode 100644
+index 18adf33b595f5406ba0829fbce2e8893fb5214fb..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/vk_funclist.inl b/Source/KTX/lib/vk_funclist.inl
+deleted file mode 100644
+index ea67a97d89bafb26ec701082581cf5ae8813f7ac..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/vk_funcs.c b/Source/KTX/lib/vk_funcs.c
+deleted file mode 100644
+index 5f5628399f125a835b98bf17c7d9957c0d8272a4..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/vk_funcs.h b/Source/KTX/lib/vk_funcs.h
+deleted file mode 100644
+index b1c9c870a48a234a52e9b36d1ad84f42dd1ff7de..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/vkformat_enum.h b/Source/KTX/lib/vkformat_enum.h
+deleted file mode 100644
+index c6d85602bd22f76a3e7da8ab5ba56baf7ff5dc42..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/lib/vkloader.c b/Source/KTX/lib/vkloader.c
+deleted file mode 100644
+index db47c07df282d7829e48cf71aeb63d1acb8095ed..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/other_include/KHR/khr_df.h b/Source/KTX/other_include/KHR/khr_df.h
+deleted file mode 100644
+index bbd0d14bd90c6ecb5e1e7beed2de0d9862ebde66..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/other_include/KHR/khrplatform.h b/Source/KTX/other_include/KHR/khrplatform.h
+deleted file mode 100644
+index 5b55ea2b9814c22457f20e8b6bbe4c3b4579147e..0000000000000000000000000000000000000000
+diff --git a/Source/KTX/other_include/zstd_errors.h b/Source/KTX/other_include/zstd_errors.h
+deleted file mode 100644
+index 238309457b3f1c61f48e2a626f917aa8ad86dd3f..0000000000000000000000000000000000000000

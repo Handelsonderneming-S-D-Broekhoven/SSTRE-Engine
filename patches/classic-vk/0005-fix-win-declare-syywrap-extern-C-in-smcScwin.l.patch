@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Fri, 27 Nov 2026 20:03:06 +0100
+Subject: [PATCH] fix(win): declare syywrap extern "C" in smcScwin.l
+
+flex 2.6.4 declares 'extern "C" int yywrap(void)' (mapped to syywrap)
+before user code, so the C++-linkage definition fails with C2732.
+Add the same extern "C" declaration that the Unix variant
+smcScan.l already uses. Only the MSVC build uses smcScwin.l.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ SamTFE/Sources/Engine/Ska/smcScwin.l | 4 ++++
+ SamTSE/Sources/Engine/Ska/smcScwin.l | 4 ++++
+ 2 files changed, 8 insertions(+)
+
+diff --git a/SamTFE/Sources/Engine/Ska/smcScwin.l b/SamTFE/Sources/Engine/Ska/smcScwin.l
+index ced0bbeda9449e6e15307a242a3b8cab162a5230..4363479a4dad2119ce6accf43508b4d52b5e0295 100644
+--- a/SamTFE/Sources/Engine/Ska/smcScwin.l
++++ b/SamTFE/Sources/Engine/Ska/smcScwin.l
+@@ -26,6 +26,10 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #include <Engine/Templates/DynamicStackArray.cpp>
+ extern CTFileName _fnmApplicationPath;
+ 
++#ifdef __cplusplus
++extern "C" { int syywrap(void); }
++#endif
++
+ int syywrap(void)
+ {
+   // no more buffers
+diff --git a/SamTSE/Sources/Engine/Ska/smcScwin.l b/SamTSE/Sources/Engine/Ska/smcScwin.l
+index ced0bbeda9449e6e15307a242a3b8cab162a5230..4363479a4dad2119ce6accf43508b4d52b5e0295 100644
+--- a/SamTSE/Sources/Engine/Ska/smcScwin.l
++++ b/SamTSE/Sources/Engine/Ska/smcScwin.l
+@@ -26,6 +26,10 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #include <Engine/Templates/DynamicStackArray.cpp>
+ extern CTFileName _fnmApplicationPath;
+ 
++#ifdef __cplusplus
++extern "C" { int syywrap(void); }
++#endif
++
+ int syywrap(void)
+ {
+   // no more buffers

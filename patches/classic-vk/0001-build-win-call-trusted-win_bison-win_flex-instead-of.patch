@@ -1,0 +1,430 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Fri, 27 Nov 2026 19:50:16 +0100
+Subject: [PATCH] build(win): call trusted win_bison/win_flex instead of
+ bundled Bison.exe/Flex.exe
+
+The MSVC projects invoke bare 'bison'/'flex', which resolve to the
+unverified Tools.Win32/Bison.exe and Flex.exe via ExecutablePath.
+Rename the custom-build commands to win_bison/win_flex (WinFlexBison
+2.5.25: bison 3.8.2, flex 2.6.4) so the trusted tools on PATH are
+used. No other change to the commands.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ SamTFE/Sources/Ecc/Ecc.vcxproj                | 16 +++++-----
+ SamTFE/Sources/Engine/Engine.vcxproj          | 32 +++++++++----------
+ .../SeriousSkaStudio/SeriousSkaStudio.vcxproj | 16 +++++-----
+ SamTSE/Sources/Ecc/Ecc.vcxproj                | 16 +++++-----
+ SamTSE/Sources/Engine/Engine.vcxproj          | 32 +++++++++----------
+ .../SeriousSkaStudio/SeriousSkaStudio.vcxproj | 16 +++++-----
+ 6 files changed, 64 insertions(+), 64 deletions(-)
+
+diff --git a/SamTFE/Sources/Ecc/Ecc.vcxproj b/SamTFE/Sources/Ecc/Ecc.vcxproj
+index fcc7bce67238c51bfb687ce18314bf6a041d3dad..a21c329fcce2eb48768b033055108d8ceb3e333c 100644
+--- a/SamTFE/Sources/Ecc/Ecc.vcxproj
++++ b/SamTFE/Sources/Ecc/Ecc.vcxproj
+@@ -328,12 +328,12 @@ copy Debug\%(Filename).map $(SolutionDir)..\Bin\ &gt;nul</Command>
+     <CustomBuild Include="Parser.y">
+       <FileType>Document</FileType>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d  
++win_bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d  
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d  
++win_bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d  
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+@@ -342,12 +342,12 @@ del %(RootDir)%(Directory)\Parser.c /q</Command>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">%(RootDir)%(Directory)\Parser.cpp;%(RootDir)%(Directory)\Parser.h;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">%(RootDir)%(Directory)\Parser.cpp;%(RootDir)%(Directory)\Parser.h;%(Outputs)</Outputs>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d  
++win_bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d  
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d  
++win_bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d  
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+@@ -358,14 +358,14 @@ del %(RootDir)%(Directory)\Parser.c /q</Command>
+     </CustomBuild>
+     <CustomBuild Include="Scanner.l">
+       <FileType>Document</FileType>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Creating scanner source</Message>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Creating scanner source</Message>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">.\Scanner.cpp;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.\Scanner.cpp;%(Outputs)</Outputs>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">.\Scanner.cpp;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.\Scanner.cpp;%(Outputs)</Outputs>
+     </CustomBuild>
+diff --git a/SamTFE/Sources/Engine/Engine.vcxproj b/SamTFE/Sources/Engine/Engine.vcxproj
+index c733a999a8df28f027389a3bc784f4460adaa02d..dc89d4c0191b9bc985aed52f0c00695d5f3e979b 100755
+--- a/SamTFE/Sources/Engine/Engine.vcxproj
++++ b/SamTFE/Sources/Engine/Engine.vcxproj
+@@ -1373,12 +1373,12 @@ copy Release\$(TargetName).lib $(SolutionDir)..\Bin\ &gt;nul</Command>
+     <CustomBuild Include="Base\Parser.y">
+       <FileType>Document</FileType>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Base/Parser.c $(ProjectName)/Base/Parser.y -d
++win_bison -o$(ProjectName)/Base/Parser.c $(ProjectName)/Base/Parser.y -d
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Base/Parser.c $(ProjectName)/Base/Parser.y -d
++win_bison -o$(ProjectName)/Base/Parser.c $(ProjectName)/Base/Parser.y -d
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+@@ -1387,12 +1387,12 @@ del %(RootDir)%(Directory)\Parser.c /q</Command>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">%(RootDir)%(Directory)\Parser.cpp;%(RootDir)%(Directory)\Parser.h;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">%(RootDir)%(Directory)\Parser.cpp;%(RootDir)%(Directory)\Parser.h;%(Outputs)</Outputs>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Base/Parser.c $(ProjectName)/Base/Parser.y -d
++win_bison -o$(ProjectName)/Base/Parser.c $(ProjectName)/Base/Parser.y -d
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Base/Parser.c $(ProjectName)/Base/Parser.y -d
++win_bison -o$(ProjectName)/Base/Parser.c $(ProjectName)/Base/Parser.y -d
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+@@ -1403,14 +1403,14 @@ del %(RootDir)%(Directory)\Parser.c /q</Command>
+     </CustomBuild>
+     <CustomBuild Include="Base\Scanner.l">
+       <FileType>Document</FileType>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Generating shell scanner source</Message>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Generating shell scanner source</Message>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">%(RootDir)%(Directory)\Scanner.cpp;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">%(RootDir)%(Directory)\Scanner.cpp;%(Outputs)</Outputs>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Generating shell scanner source</Message>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Generating shell scanner source</Message>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">%(RootDir)%(Directory)\Scanner.cpp;%(Outputs)</Outputs>
+@@ -1422,24 +1422,24 @@ del %(RootDir)%(Directory)\Parser.c /q</Command>
+     <CustomBuild Include="Ska\smcPars.y">
+       <FileType>Document</FileType>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">pushd $(SolutionDir)
+-bison -psyy -o$(ProjectName)/Ska/smcPars.c $(ProjectName)/Ska/smcPars.y -d
++win_bison -psyy -o$(ProjectName)/Ska/smcPars.c $(ProjectName)/Ska/smcPars.y -d
+ popd
+ copy %(RootDir)%(Directory)\smcPars.c %(RootDir)%(Directory)\smcPars.cpp  
+ del %(RootDir)%(Directory)\smcPars.c /q</Command>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">pushd $(SolutionDir)
+-bison -psyy -o$(ProjectName)/Ska/smcPars.c $(ProjectName)/Ska/smcPars.y -d
++win_bison -psyy -o$(ProjectName)/Ska/smcPars.c $(ProjectName)/Ska/smcPars.y -d
+ popd
+ copy %(RootDir)%(Directory)\smcPars.c %(RootDir)%(Directory)\smcPars.cpp  
+ del %(RootDir)%(Directory)\smcPars.c /q</Command>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">%(RootDir)%(Directory)\smcPars.cpp;%(RootDir)%(Directory)\smcPars.h;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">%(RootDir)%(Directory)\smcPars.cpp;%(RootDir)%(Directory)\smcPars.h;%(Outputs)</Outputs>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">pushd $(SolutionDir)
+-bison -psyy -o$(ProjectName)/Ska/smcPars.c $(ProjectName)/Ska/smcPars.y -d
++win_bison -psyy -o$(ProjectName)/Ska/smcPars.c $(ProjectName)/Ska/smcPars.y -d
+ popd
+ copy %(RootDir)%(Directory)\smcPars.c %(RootDir)%(Directory)\smcPars.cpp  
+ del %(RootDir)%(Directory)\smcPars.c /q</Command>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">pushd $(SolutionDir)
+-bison -psyy -o$(ProjectName)/Ska/smcPars.c $(ProjectName)/Ska/smcPars.y -d
++win_bison -psyy -o$(ProjectName)/Ska/smcPars.c $(ProjectName)/Ska/smcPars.y -d
+ popd
+ copy %(RootDir)%(Directory)\smcPars.c %(RootDir)%(Directory)\smcPars.cpp  
+ del %(RootDir)%(Directory)\smcPars.c /q</Command>
+@@ -1547,10 +1547,10 @@ ecc Engine/Classes/%(Filename).es </Command>
+   <ItemGroup>
+     <CustomBuild Include="Ska\smcScwin.l">
+       <FileType>Document</FileType>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">%(RootDir)%(Directory)\smcScan.cpp;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">%(RootDir)%(Directory)\smcScan.cpp;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">%(RootDir)%(Directory)\smcScan.cpp;%(Outputs)</Outputs>
+diff --git a/SamTFE/Sources/SeriousSkaStudio/SeriousSkaStudio.vcxproj b/SamTFE/Sources/SeriousSkaStudio/SeriousSkaStudio.vcxproj
+index a66c63aa6aaf88170e1d02e606ef49c23c800ecc..b0089dfcd6114d98ef26bdf83c162967265febed 100644
+--- a/SamTFE/Sources/SeriousSkaStudio/SeriousSkaStudio.vcxproj
++++ b/SamTFE/Sources/SeriousSkaStudio/SeriousSkaStudio.vcxproj
+@@ -423,12 +423,12 @@ copy Release\$(TargetName).map $(SolutionDir)..\Bin\ &gt;nul </Command>
+     <CustomBuild Include="Parser.y">
+       <FileType>Document</FileType>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d
++win_bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d
++win_bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+@@ -437,12 +437,12 @@ del %(RootDir)%(Directory)\Parser.c /q</Command>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">$(InputDir)Parser.cpp;$(InputDir)Parser.h;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(InputDir)Parser.cpp;$(InputDir)Parser.h;%(Outputs)</Outputs>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d
++win_bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d
++win_bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+@@ -453,14 +453,14 @@ del %(RootDir)%(Directory)\Parser.c /q</Command>
+     </CustomBuild>
+     <CustomBuild Include="Scanner.l">
+       <FileType>Document</FileType>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Creating scanner source</Message>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Creating scanner source</Message>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">.\Scanner.cpp;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.\Scanner.cpp;%(Outputs)</Outputs>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Creating scanner source</Message>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Creating scanner source</Message>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">.\Scanner.cpp;%(Outputs)</Outputs>
+diff --git a/SamTSE/Sources/Ecc/Ecc.vcxproj b/SamTSE/Sources/Ecc/Ecc.vcxproj
+index 0ae422159d503c91b9c9478a6504c60225737d1a..a985c279e801753c2d53b368a3f0ada2d3d55be8 100644
+--- a/SamTSE/Sources/Ecc/Ecc.vcxproj
++++ b/SamTSE/Sources/Ecc/Ecc.vcxproj
+@@ -328,12 +328,12 @@ copy Debug\%(Filename).map $(SolutionDir)..\Bin\ &gt;nul</Command>
+     <CustomBuild Include="Parser.y">
+       <FileType>Document</FileType>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d  
++win_bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d  
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d  
++win_bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d  
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+@@ -342,12 +342,12 @@ del %(RootDir)%(Directory)\Parser.c /q</Command>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">%(RootDir)%(Directory)\Parser.cpp;%(RootDir)%(Directory)\Parser.h;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">%(RootDir)%(Directory)\Parser.cpp;%(RootDir)%(Directory)\Parser.h;%(Outputs)</Outputs>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d  
++win_bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d  
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d  
++win_bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d  
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+@@ -358,14 +358,14 @@ del %(RootDir)%(Directory)\Parser.c /q</Command>
+     </CustomBuild>
+     <CustomBuild Include="Scanner.l">
+       <FileType>Document</FileType>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Creating scanner source</Message>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Creating scanner source</Message>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">.\Scanner.cpp;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.\Scanner.cpp;%(Outputs)</Outputs>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">.\Scanner.cpp;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">.\Scanner.cpp;%(Outputs)</Outputs>
+     </CustomBuild>
+diff --git a/SamTSE/Sources/Engine/Engine.vcxproj b/SamTSE/Sources/Engine/Engine.vcxproj
+index cbef5d149dfc4e49cffea99b9ef2ba440b78c343..0a744f16c42e20d1e68a9358257b6f4215ab9676 100755
+--- a/SamTSE/Sources/Engine/Engine.vcxproj
++++ b/SamTSE/Sources/Engine/Engine.vcxproj
+@@ -1373,12 +1373,12 @@ copy Release\$(TargetName).lib $(SolutionDir)..\Bin\ &gt;nul</Command>
+     <CustomBuild Include="Base\Parser.y">
+       <FileType>Document</FileType>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Base/Parser.c $(ProjectName)/Base/Parser.y -d
++win_bison -o$(ProjectName)/Base/Parser.c $(ProjectName)/Base/Parser.y -d
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Base/Parser.c $(ProjectName)/Base/Parser.y -d
++win_bison -o$(ProjectName)/Base/Parser.c $(ProjectName)/Base/Parser.y -d
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+@@ -1387,12 +1387,12 @@ del %(RootDir)%(Directory)\Parser.c /q</Command>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">%(RootDir)%(Directory)\Parser.cpp;%(RootDir)%(Directory)\Parser.h;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">%(RootDir)%(Directory)\Parser.cpp;%(RootDir)%(Directory)\Parser.h;%(Outputs)</Outputs>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Base/Parser.c $(ProjectName)/Base/Parser.y -d
++win_bison -o$(ProjectName)/Base/Parser.c $(ProjectName)/Base/Parser.y -d
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Base/Parser.c $(ProjectName)/Base/Parser.y -d
++win_bison -o$(ProjectName)/Base/Parser.c $(ProjectName)/Base/Parser.y -d
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+@@ -1403,14 +1403,14 @@ del %(RootDir)%(Directory)\Parser.c /q</Command>
+     </CustomBuild>
+     <CustomBuild Include="Base\Scanner.l">
+       <FileType>Document</FileType>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Generating shell scanner source</Message>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Generating shell scanner source</Message>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">%(RootDir)%(Directory)\Scanner.cpp;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">%(RootDir)%(Directory)\Scanner.cpp;%(Outputs)</Outputs>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Generating shell scanner source</Message>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Generating shell scanner source</Message>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">%(RootDir)%(Directory)\Scanner.cpp;%(Outputs)</Outputs>
+@@ -1422,24 +1422,24 @@ del %(RootDir)%(Directory)\Parser.c /q</Command>
+     <CustomBuild Include="Ska\smcPars.y">
+       <FileType>Document</FileType>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">pushd $(SolutionDir)
+-bison -psyy -o$(ProjectName)/Ska/smcPars.c $(ProjectName)/Ska/smcPars.y -d
++win_bison -psyy -o$(ProjectName)/Ska/smcPars.c $(ProjectName)/Ska/smcPars.y -d
+ popd
+ copy %(RootDir)%(Directory)\smcPars.c %(RootDir)%(Directory)\smcPars.cpp  
+ del %(RootDir)%(Directory)\smcPars.c /q</Command>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">pushd $(SolutionDir)
+-bison -psyy -o$(ProjectName)/Ska/smcPars.c $(ProjectName)/Ska/smcPars.y -d
++win_bison -psyy -o$(ProjectName)/Ska/smcPars.c $(ProjectName)/Ska/smcPars.y -d
+ popd
+ copy %(RootDir)%(Directory)\smcPars.c %(RootDir)%(Directory)\smcPars.cpp  
+ del %(RootDir)%(Directory)\smcPars.c /q</Command>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">%(RootDir)%(Directory)\smcPars.cpp;%(RootDir)%(Directory)\smcPars.h;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">%(RootDir)%(Directory)\smcPars.cpp;%(RootDir)%(Directory)\smcPars.h;%(Outputs)</Outputs>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">pushd $(SolutionDir)
+-bison -psyy -o$(ProjectName)/Ska/smcPars.c $(ProjectName)/Ska/smcPars.y -d
++win_bison -psyy -o$(ProjectName)/Ska/smcPars.c $(ProjectName)/Ska/smcPars.y -d
+ popd
+ copy %(RootDir)%(Directory)\smcPars.c %(RootDir)%(Directory)\smcPars.cpp  
+ del %(RootDir)%(Directory)\smcPars.c /q</Command>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">pushd $(SolutionDir)
+-bison -psyy -o$(ProjectName)/Ska/smcPars.c $(ProjectName)/Ska/smcPars.y -d
++win_bison -psyy -o$(ProjectName)/Ska/smcPars.c $(ProjectName)/Ska/smcPars.y -d
+ popd
+ copy %(RootDir)%(Directory)\smcPars.c %(RootDir)%(Directory)\smcPars.cpp  
+ del %(RootDir)%(Directory)\smcPars.c /q</Command>
+@@ -1547,10 +1547,10 @@ ecc Engine/Classes/%(Filename).es </Command>
+   <ItemGroup>
+     <CustomBuild Include="Ska\smcScwin.l">
+       <FileType>Document</FileType>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">%(RootDir)%(Directory)\smcScan.cpp;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">%(RootDir)%(Directory)\smcScan.cpp;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">%(RootDir)%(Directory)\smcScan.cpp;%(Outputs)</Outputs>
+diff --git a/SamTSE/Sources/SeriousSkaStudio/SeriousSkaStudio.vcxproj b/SamTSE/Sources/SeriousSkaStudio/SeriousSkaStudio.vcxproj
+index c3a466c8057cc36c1e6ebd2782a04f4b7f86bdaa..92c8ef67afb8b4dda3ea91cc118e89980578ec33 100644
+--- a/SamTSE/Sources/SeriousSkaStudio/SeriousSkaStudio.vcxproj
++++ b/SamTSE/Sources/SeriousSkaStudio/SeriousSkaStudio.vcxproj
+@@ -423,12 +423,12 @@ copy Release\$(TargetName).map $(SolutionDir)..\Bin\ &gt;nul </Command>
+     <CustomBuild Include="Parser.y">
+       <FileType>Document</FileType>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d
++win_bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d
++win_bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+@@ -437,12 +437,12 @@ del %(RootDir)%(Directory)\Parser.c /q</Command>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">$(InputDir)Parser.cpp;$(InputDir)Parser.h;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">$(InputDir)Parser.cpp;$(InputDir)Parser.h;%(Outputs)</Outputs>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d
++win_bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+       <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">pushd $(SolutionDir)
+-bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d
++win_bison -o$(ProjectName)/Parser.c $(ProjectName)/Parser.y -d
+ popd
+ copy %(RootDir)%(Directory)\Parser.c %(RootDir)%(Directory)\Parser.cpp  
+ del %(RootDir)%(Directory)\Parser.c /q</Command>
+@@ -453,14 +453,14 @@ del %(RootDir)%(Directory)\Parser.c /q</Command>
+     </CustomBuild>
+     <CustomBuild Include="Scanner.l">
+       <FileType>Document</FileType>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Creating scanner source</Message>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Creating scanner source</Message>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">.\Scanner.cpp;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">.\Scanner.cpp;%(Outputs)</Outputs>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp  %(RootDir)%(Directory)\Scanner.l</Command>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Creating scanner source</Message>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Creating scanner source</Message>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">.\Scanner.cpp;%(Outputs)</Outputs>
+
+base-commit: 510d36f901cbe883c56b155b53717e4efdeb6522

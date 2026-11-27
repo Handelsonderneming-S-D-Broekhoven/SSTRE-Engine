@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Fri, 27 Nov 2026 19:55:42 +0100
+Subject: [PATCH] build(ecc): raise YYINITDEPTH to 1000 for bison 3.8
+
+With bison 3.8.2 the Ecc parser cannot relocate its stack because
+YYSTYPE (SType) is a non-trivial C++ type, so it stops at the default
+YYINITDEPTH of 200 and fails on Entities/Player.es(5589) with
+'memory exhausted'. tx00100xt/SeriousSamClassic-VK uses the same
+'#define YYINITDEPTH 1000' in Ecc/Parser.y.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Sources/Ecc/Parser.y | 4 ++++
+ 1 file changed, 4 insertions(+)
+
+diff --git a/Sources/Ecc/Parser.y b/Sources/Ecc/Parser.y
+index 977882b611040f5abdc376758ed19f435f04f266..4085c1b6db7e6db24bc9f50515b31b8de5486eaa 100644
+--- a/Sources/Ecc/Parser.y
++++ b/Sources/Ecc/Parser.y
+@@ -3,6 +3,10 @@
+ #include "Ecc/StdH.h"
+ #include "Ecc/Main.h"
+ 
++// SSTRE: bison >= 3 cannot grow the parser stack for a non-trivial C++ YYSTYPE;
++// use a larger initial stack (same value as tx00100xt/SeriousSamClassic-VK Ecc/Parser.y).
++#define YYINITDEPTH 1000
++
+ static char *_strCurrentClass;
+ static int _iCurrentClassID;
+ static char *_strCurrentBase;

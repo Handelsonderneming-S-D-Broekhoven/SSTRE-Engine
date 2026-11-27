@@ -1,0 +1,93 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Fri, 27 Nov 2026 19:50:57 +0100
+Subject: [PATCH] build(win): drop legacy flex skeletons (-S
+ Flex.skl/smcFlex.skl)
+
+flex 2.6.4 (win_flex) rejects the flex-2.5-era skeleton files with
+'fatal internal error, bad line in skeleton file'. The upstream CMake
+build (used on Linux/BSD/macOS) never passes -S and uses flex's
+built-in skeleton, so do the same in the MSVC Engine projects.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ SamTFE/Sources/Engine/Engine.vcxproj | 16 ++++++++--------
+ SamTSE/Sources/Engine/Engine.vcxproj | 16 ++++++++--------
+ 2 files changed, 16 insertions(+), 16 deletions(-)
+
+diff --git a/SamTFE/Sources/Engine/Engine.vcxproj b/SamTFE/Sources/Engine/Engine.vcxproj
+index dc89d4c0191b9bc985aed52f0c00695d5f3e979b..2723f88658d1ce29afd05e55f5d929fe68e8d846 100755
+--- a/SamTFE/Sources/Engine/Engine.vcxproj
++++ b/SamTFE/Sources/Engine/Engine.vcxproj
+@@ -1403,14 +1403,14 @@ del %(RootDir)%(Directory)\Parser.c /q</Command>
+     </CustomBuild>
+     <CustomBuild Include="Base\Scanner.l">
+       <FileType>Document</FileType>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp %(RootDir)%(Directory)\Scanner.l</Command>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Generating shell scanner source</Message>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Generating shell scanner source</Message>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">%(RootDir)%(Directory)\Scanner.cpp;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">%(RootDir)%(Directory)\Scanner.cpp;%(Outputs)</Outputs>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp %(RootDir)%(Directory)\Scanner.l</Command>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Generating shell scanner source</Message>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Generating shell scanner source</Message>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">%(RootDir)%(Directory)\Scanner.cpp;%(Outputs)</Outputs>
+@@ -1547,10 +1547,10 @@ ecc Engine/Classes/%(Filename).es </Command>
+   <ItemGroup>
+     <CustomBuild Include="Ska\smcScwin.l">
+       <FileType>Document</FileType>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy %(RootDir)%(Directory)\smcScwin.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy %(RootDir)%(Directory)\smcScwin.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy %(RootDir)%(Directory)\smcScwin.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy %(RootDir)%(Directory)\smcScwin.l</Command>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">%(RootDir)%(Directory)\smcScan.cpp;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">%(RootDir)%(Directory)\smcScan.cpp;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">%(RootDir)%(Directory)\smcScan.cpp;%(Outputs)</Outputs>
+diff --git a/SamTSE/Sources/Engine/Engine.vcxproj b/SamTSE/Sources/Engine/Engine.vcxproj
+index 0a744f16c42e20d1e68a9358257b6f4215ab9676..371cf1aedf86ef60defdb7bf49f53d3eef5645dd 100755
+--- a/SamTSE/Sources/Engine/Engine.vcxproj
++++ b/SamTSE/Sources/Engine/Engine.vcxproj
+@@ -1403,14 +1403,14 @@ del %(RootDir)%(Directory)\Parser.c /q</Command>
+     </CustomBuild>
+     <CustomBuild Include="Base\Scanner.l">
+       <FileType>Document</FileType>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp %(RootDir)%(Directory)\Scanner.l</Command>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">Generating shell scanner source</Message>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Generating shell scanner source</Message>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">%(RootDir)%(Directory)\Scanner.cpp;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">%(RootDir)%(Directory)\Scanner.cpp;%(Outputs)</Outputs>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp -S%(RootDir)%(Directory)\Flex.skl %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp %(RootDir)%(Directory)\Scanner.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">win_flex -o%(RootDir)%(Directory)\Scanner.cpp %(RootDir)%(Directory)\Scanner.l</Command>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">Generating shell scanner source</Message>
+       <Message Condition="'$(Configuration)|$(Platform)'=='Release|x64'">Generating shell scanner source</Message>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">%(RootDir)%(Directory)\Scanner.cpp;%(Outputs)</Outputs>
+@@ -1547,10 +1547,10 @@ ecc Engine/Classes/%(Filename).es </Command>
+   <ItemGroup>
+     <CustomBuild Include="Ska\smcScwin.l">
+       <FileType>Document</FileType>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
+-      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy -S%(RootDir)%(Directory)\smcFlex.skl %(RootDir)%(Directory)\smcScwin.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy %(RootDir)%(Directory)\smcScwin.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Release|x64'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy %(RootDir)%(Directory)\smcScwin.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy %(RootDir)%(Directory)\smcScwin.l</Command>
++      <Command Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">win_flex -o%(RootDir)%(Directory)\smcScan.cpp -Psyy %(RootDir)%(Directory)\smcScwin.l</Command>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|x64'">%(RootDir)%(Directory)\smcScan.cpp;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Release|Win32'">%(RootDir)%(Directory)\smcScan.cpp;%(Outputs)</Outputs>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">%(RootDir)%(Directory)\smcScan.cpp;%(Outputs)</Outputs>

@@ -22,6 +22,17 @@
       "swhid": "swh:1:rev:0e7f223c19a28014b60d900878c28831db522120",
       "patch_series": "patches/serious-engine-rt",
       "audit": "SSTRE docs/experiments/EXP-004-upstream-publication-audit.md"
+    },
+    {
+      "name": "rtgl1",
+      "role": "dependency",
+      "repository": "https://github.com/sultim-t/RayTracedGL1",
+      "commit": "b1eb3d8ca3fe75f6f4dda16a53aeb99ea613aead",
+      "tag_hint": "v1.1.0",
+      "license": "MIT",
+      "swhid": "swh:1:rev:b1eb3d8ca3fe75f6f4dda16a53aeb99ea613aead",
+      "patch_series": "patches/rtgl1",
+      "audit": "SSTRE docs/experiments/EXP-003-runtime-dependency-licensing.md"
     }
   ]
 }

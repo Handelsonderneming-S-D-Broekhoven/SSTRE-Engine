@@ -1,0 +1,42 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Fri, 27 Nov 2026 19:55:02 +0100
+Subject: [PATCH] build(win): define YY_SKIP_YYWRAP in Engine scanners
+
+flex 2.6.4 declares 'extern "C" int yywrap(void)' when compiled as
+C++, but Scanner.l/smcScan.l define yywrap()/syywrap() with C++
+linkage (C2732). Suppress the generated prototype; the user
+definition precedes its only use in yylex().
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Sources/Engine/Base/Scanner.l | 2 ++
+ Sources/Engine/Ska/smcScan.l  | 2 ++
+ 2 files changed, 4 insertions(+)
+
+diff --git a/Sources/Engine/Base/Scanner.l b/Sources/Engine/Base/Scanner.l
+index fd51475b4398bb610bc1355bd5c410bf11a382d2..93b5dc2ef318703c4110d892242740843df11758 100644
+--- a/Sources/Engine/Base/Scanner.l
++++ b/Sources/Engine/Base/Scanner.l
+@@ -1,6 +1,8 @@
+ %top{
+ /* SSTRE: flex >= 2.6 built-in skeleton; replaces the precompiled-header include formerly emitted by the legacy skeleton */
+ #include "StdH.h"
++/* user code defines yywrap() with C++ linkage; suppress flex 2.6 extern "C" prototype */
++#define YY_SKIP_YYWRAP
+ }
+ %{
+ #include "ParsingSymbols.h"
+diff --git a/Sources/Engine/Ska/smcScan.l b/Sources/Engine/Ska/smcScan.l
+index b178610fdbe3c67279b22d9c0c14df499f243f9c..c94fab54e3035c1168c522a5d4b8785e7e19f665 100644
+--- a/Sources/Engine/Ska/smcScan.l
++++ b/Sources/Engine/Ska/smcScan.l
+@@ -1,6 +1,8 @@
+ %top{
+ /* SSTRE: flex >= 2.6 built-in skeleton; replaces the precompiled-header include formerly emitted by the legacy skeleton */
+ #include <Engine/StdH.h>
++/* user code defines yywrap() with C++ linkage; suppress flex 2.6 extern "C" prototype */
++#define YY_SKIP_YYWRAP
+ }
+ %option prefix="syy"
+ %{
