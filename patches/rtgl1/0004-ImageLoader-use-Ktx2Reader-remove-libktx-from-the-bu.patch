@@ -1,0 +1,334 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Fri, 27 Nov 2026 21:25:59 +0100
+Subject: [PATCH] ImageLoader: use Ktx2Reader; remove libktx from the build
+
+ImageLoader now reads KTX2 files through the clean-room Ktx2Reader
+instead of libktx. The ResultInfo / LayeredResultInfo contract is
+unchanged (pData, dataSize, per-level offsets/sizes, base size, vkFormat,
+layer pointers). Differences: Load() rejects textures that are not plain
+2D (previously only asserted), and inflated data is capped at 4 GiB to
+fit the uint32_t fields.
+
+CMake no longer compiles any Source/KTX file, defines KHRONOS_STATIC /
+LIBKTX or adds the KTX include directories. It builds Ktx2Reader.cpp
+and Source/zstd/zstddeclib.c instead.
+
+Note: Ktx2Reader is GPL-2.0-only, so an RTGL1 binary built from this
+branch is distributed under GPL-2.0-only as a whole; the MIT-licensed
+RTGL1 files keep their MIT notices.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ CMakeLists.txt         |  35 ++++--------
+ Source/ImageLoader.cpp | 117 +++++++++++++++++------------------------
+ Source/ImageLoader.h   |   8 +--
+ 3 files changed, 63 insertions(+), 97 deletions(-)
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 1893046453dd437cb8d4462a932d9d55141b032f..209f3fef7e1721f00c4a2e58779267a2cc78e404 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -40,6 +40,7 @@ set(PrivateHeaders
+     "Source/Rasterizer.h"
+     "Source/RasterizedDataCollector.h"
+     "Source/ImageLoader.h" 
++    "Source/Ktx2Reader.h"
+     "Source/TextureManager.h" 
+     "Source/MemoryAllocator.h" 
+     "Source/SamplerManager.h" 
+@@ -158,24 +159,11 @@ set(Sources
+ 
+ 
+ 
+-set(KTXSourceFolder Source/KTX/lib)
+-
+-set(KTXSources
+-    "${KTXSourceFolder}/texture.c"
+-    "${KTXSourceFolder}/texture1.c"
+-    "${KTXSourceFolder}/texture2.c"
+-    "${KTXSourceFolder}/hashlist.c"
+-    "${KTXSourceFolder}/checkheader.c"
+-    "${KTXSourceFolder}/swap.c"
+-    "${KTXSourceFolder}/memstream.c"
+-    "${KTXSourceFolder}/filestream.c"
+-    "${KTXSourceFolder}/vkloader.c"
+-    "${KTXSourceFolder}/vk_funcs.c"
+-    "${KTXSourceFolder}/basisu/zstd/zstd.c"
+-    "${KTXSourceFolder}/dfdutils/createdfd.c"
+-    "${KTXSourceFolder}/dfdutils/interpretdfd.c"
+-    "${KTXSourceFolder}/dfdutils/queries.c"
+-    "${KTXSourceFolder}/dfdutils/vk2dfd.c"
++# KTX2 container reader (clean-room, GPL-2.0-only) and the Zstandard
++# single-file decompressor (BSD-3-Clause OR GPL-2.0, see Source/zstd/).
++set(Ktx2Sources
++    "Source/Ktx2Reader.cpp"
++    "Source/zstd/zstddeclib.c"
+ )
+ 
+ option(RG_WITH_EXPORTS          "Compile library for export"                ON)
+@@ -191,10 +179,6 @@ option(RG_WITH_NVIDIA_DLSS      "Build RTGL1 with Nvidia DLSS"              OFF)
+ option(RG_WITH_EXAMPLES         "Add examples project"                      OFF)
+ 
+ 
+-# for KTX-Software
+-add_definitions(-DKHRONOS_STATIC -DLIBKTX)
+-
+-
+ # options to definitions
+ if (RG_WITH_EXPORTS)
+     message(STATUS "RG_WITH_EXPORTS enabled. RTGL1 functions are exported.")
+@@ -231,13 +215,12 @@ endif()
+ 
+ add_library(RayTracedGL1 SHARED  
+     ${Sources}
+-    ${KTXSources}
++    ${Ktx2Sources}
+     ${PublicHeaders}
+ )
+ 
+-# KTX
+-target_include_directories(RayTracedGL1 PRIVATE "Source/KTX/include")
+-target_include_directories(RayTracedGL1 PRIVATE "Source/KTX/include" "Source/KTX/other_include" "Source/KTX/lib/basisu/zstd")
++# Zstandard
++target_include_directories(RayTracedGL1 PRIVATE "Source/zstd")
+ 
+ # DLSS
+ if (RG_WITH_NVIDIA_DLSS)
+diff --git a/Source/ImageLoader.cpp b/Source/ImageLoader.cpp
+index ff35b30d6ab219616eb8c2dea2f794a26a255ccb..c27b9d6254389e3eb660bd627fbc1acaa2f19822 100644
+--- a/Source/ImageLoader.cpp
++++ b/Source/ImageLoader.cpp
+@@ -23,8 +23,7 @@
+ #include <algorithm>
+ #include <cassert>
+ 
+-#include <ktx.h>
+-#include <ktxvulkan.h>
++#include "Ktx2Reader.h"
+ 
+ using namespace RTGL1;
+ 
+@@ -36,9 +35,14 @@ ImageLoader::~ImageLoader()
+     assert(loadedImages.empty());
+ }
+ 
+-bool ImageLoader::LoadTextureFile(const char *pFilePath, ktxTexture **ppTexture)
++std::unique_ptr<Ktx2::Texture> ImageLoader::LoadTextureFile(const char *pFilePath)
+ {
+-    KTX_error_code r;
++    // RTGL1 stores level sizes and offsets as uint32_t
++    Ktx2::Limits limits = {};
++    limits.maxDataBytes = std::min<uint64_t>(limits.maxDataBytes, 0xFFFFFFFFull);
++
++    auto pTexture = std::make_unique<Ktx2::Texture>();
++    Ktx2::Result r;
+ 
+     if (userFileLoad->Exists())
+     {
+@@ -46,25 +50,22 @@ bool ImageLoader::LoadTextureFile(const char *pFilePath, ktxTexture **ppTexture)
+ 
+         if (!fileHandle.Contains())
+         {
+-            return false;
++            return nullptr;
+         }
+ 
+-        r = ktxTexture_CreateFromMemory(
+-            static_cast<const uint8_t *>(fileHandle.pData), fileHandle.dataSize,
+-            KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
+-            ppTexture
+-        );
++        r = Ktx2::Read(fileHandle.pData, fileHandle.dataSize, pTexture.get(), limits);
+     }
+     else
+     {
+-        r = ktxTexture_CreateFromNamedFile(
+-            pFilePath,
+-            KTX_TEXTURE_CREATE_LOAD_IMAGE_DATA_BIT,
+-            ppTexture);
+-       
++        r = Ktx2::ReadFile(pFilePath, pTexture.get(), limits);
++    }
++
++    if (r != Ktx2::Result::Success)
++    {
++        return nullptr;
+     }
+ 
+-    return r == KTX_SUCCESS;
++    return pTexture;
+ }
+ 
+ bool ImageLoader::Load(const char *pFilePath, ResultInfo *pResultInfo)
+@@ -78,49 +79,37 @@ bool ImageLoader::Load(const char *pFilePath, ResultInfo *pResultInfo)
+         return false;
+     }
+ 
+-    ktxTexture *pTexture = nullptr;
+-    bool loaded = LoadTextureFile(pFilePath, &pTexture);
++    std::unique_ptr<Ktx2::Texture> pTexture = LoadTextureFile(pFilePath);
+ 
+-    if (!loaded)
++    if (!pTexture)
+     {
+         return false;
+     }
+ 
+-    assert(pTexture->numDimensions == 2);
+-    assert(pTexture->numLevels <= MAX_PREGENERATED_MIPMAP_LEVELS);
+-    assert(pTexture->numLayers == 1);
+-    assert(pTexture->numFaces == 1);
+-
++    // only plain 2D textures are expected here
++    if (pTexture->NumDimensions() != 2 || pTexture->NumLayers() != 1 || pTexture->faceCount != 1)
++    {
++        return false;
++    }
+ 
+-    pResultInfo->baseSize = { pTexture->baseWidth, pTexture->baseHeight };
+-    pResultInfo->format = ktxTexture_GetVkFormat(pTexture);
+-    pResultInfo->pData = ktxTexture_GetData(pTexture);
+-    pResultInfo->dataSize = static_cast<uint32_t>(ktxTexture_GetDataSize(pTexture));
++    pResultInfo->baseSize = { pTexture->pixelWidth, pTexture->pixelHeight };
++    pResultInfo->format = static_cast<VkFormat>(pTexture->vkFormat);
++    pResultInfo->pData = pTexture->data.data();
++    pResultInfo->dataSize = static_cast<uint32_t>(pTexture->data.size());
+     pResultInfo->isPregenerated = true;
+ 
+-    
+     // get mipmap offsets
+-    pResultInfo->levelCount = std::min(pTexture->numLevels, MAX_PREGENERATED_MIPMAP_LEVELS);
++    pResultInfo->levelCount = std::min(pTexture->NumLevels(), MAX_PREGENERATED_MIPMAP_LEVELS);
+ 
+     for (uint32_t level = 0; level < pResultInfo->levelCount; level++)
+     {
+-        ktx_size_t offset = 0;
+-        auto r = ktxTexture_GetImageOffset(pTexture, level, 0, 0, &offset);
+-
+-        ktx_size_t size = ktxTexture_GetImageSize(pTexture, level);
++        const Ktx2::Level &l = pTexture->levels[level];
+ 
+-        if (r != KTX_SUCCESS || size == 0)
+-        {
+-            pResultInfo->levelCount = level + 1;
+-            break;
+-        }
+-
+-        pResultInfo->levelOffsets[level] = static_cast<uint32_t>(offset);
+-        pResultInfo->levelSizes[level] = static_cast<uint32_t>(size);
++        pResultInfo->levelOffsets[level] = static_cast<uint32_t>(l.dataOffset);
++        pResultInfo->levelSizes[level] = static_cast<uint32_t>(l.imageSize);
+     }
+ 
+-
+-    loadedImages.push_back(static_cast<void*>(pTexture));
++    loadedImages.push_back(std::move(pTexture));
+     return true;
+ }
+ 
+@@ -133,52 +122,44 @@ bool ImageLoader::LoadLayered(const char *pFilePath, LayeredResultInfo *pResultI
+         return false;
+     }
+ 
+-    ktxTexture *pTexture = nullptr;
+-    bool loaded = LoadTextureFile(pFilePath, &pTexture);
++    std::unique_ptr<Ktx2::Texture> pTexture = LoadTextureFile(pFilePath);
+ 
+-    if (!loaded)
++    if (!pTexture)
+     {
+         return false;
+     }
+ 
+-    assert(pTexture->numDimensions == 2);
+-    assert(pTexture->numLevels == 1);
+-    assert(pTexture->numFaces == 1);
++    // 2D (array) texture; only the base level is used
++    if (pTexture->NumDimensions() != 2 || pTexture->faceCount != 1)
++    {
++        return false;
++    }
+ 
++    const Ktx2::Level &base = pTexture->levels[0];
+ 
+-    pResultInfo->baseSize = { pTexture->baseWidth, pTexture->baseHeight };
+-    pResultInfo->format = ktxTexture_GetVkFormat(pTexture);
+-    pResultInfo->dataSize = static_cast<uint32_t>(ktxTexture_GetDataSize(pTexture));
++    pResultInfo->baseSize = { pTexture->pixelWidth, pTexture->pixelHeight };
++    pResultInfo->format = static_cast<VkFormat>(pTexture->vkFormat);
++    pResultInfo->dataSize = static_cast<uint32_t>(base.dataSize);
+ 
+     pResultInfo->layerData.clear();
+ 
+-    uint8_t *pData = ktxTexture_GetData(pTexture);
+-
+-    for (uint32_t i = 0; i < pTexture->numLayers; i++)
++    for (uint32_t i = 0; i < pTexture->NumLayers(); i++)
+     {
+-        ktx_size_t offset;
+-        ktx_error_code_e r = ktxTexture_GetImageOffset(pTexture, 0, i, 0, &offset);
++        size_t offset = 0;
+ 
+-        if (r != KTX_SUCCESS)
++        if (!pTexture->GetImageOffset(0, i, 0, &offset))
+         {
+             continue;
+         }
+ 
+-        pResultInfo->layerData.push_back(pData + offset);
++        pResultInfo->layerData.push_back(pTexture->data.data() + offset);
+     }
+ 
+-    loadedImages.push_back(static_cast<void *>(pTexture));
++    loadedImages.push_back(std::move(pTexture));
+     return true;
+ }
+ 
+ void ImageLoader::FreeLoaded()
+ {
+-    for (void *pp : loadedImages)
+-    {
+-        ktxTexture *p = static_cast<ktxTexture*>(pp);
+-
+-        ktxTexture_Destroy(p);
+-    }
+-
+     loadedImages.clear();
+ }
+diff --git a/Source/ImageLoader.h b/Source/ImageLoader.h
+index be2e0aa712f3ebebd7083bf0f4d5b18fc9098c46..922858c5ba48197d668e5d94e86d34d2e646c775 100644
+--- a/Source/ImageLoader.h
++++ b/Source/ImageLoader.h
+@@ -20,13 +20,14 @@
+ 
+ #pragma once
+ 
++#include <memory>
+ #include <vector>
+ 
+ #include "Common.h"
+ #include "Const.h"
+ #include "UserFunction.h"
+ 
+-struct ktxTexture;
++namespace RTGL1 { namespace Ktx2 { struct Texture; } }
+ 
+ namespace RTGL1
+ {
+@@ -71,11 +72,12 @@ public:
+     void FreeLoaded();
+ 
+ private:
+-    bool LoadTextureFile(const char *pFilePath, ktxTexture **ppTexture);
++    // Reads and validates a KTX2 file via the clean-room reader (Ktx2Reader.h)
++    std::unique_ptr<Ktx2::Texture> LoadTextureFile(const char *pFilePath);
+ 
+ private:
+     std::shared_ptr<UserFileLoad> userFileLoad;
+-    std::vector<void *> loadedImages;
++    std::vector<std::unique_ptr<Ktx2::Texture>> loadedImages;
+ };
+ 
+ }
+\ No newline at end of file

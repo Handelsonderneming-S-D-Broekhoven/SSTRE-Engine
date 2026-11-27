@@ -1,0 +1,70 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Fri, 27 Nov 2026 20:03:06 +0100
+Subject: [PATCH] build(win): include winres.h instead of MFC afxres.h in game
+ .rc files
+
+SeriousSam.rc and DedicatedServer.rc include afxres.h, which ships
+only with the MFC component (not installed on the reference PC).
+winres.h from the Windows SDK provides the same resource definitions.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ SamTFE/Sources/DedicatedServer/DedicatedServer.rc | 2 +-
+ SamTFE/Sources/SeriousSam/SeriousSam.rc           | 2 +-
+ SamTSE/Sources/DedicatedServer/DedicatedServer.rc | 2 +-
+ SamTSE/Sources/SeriousSam/SeriousSam.rc           | 2 +-
+ 4 files changed, 4 insertions(+), 4 deletions(-)
+
+diff --git a/SamTFE/Sources/DedicatedServer/DedicatedServer.rc b/SamTFE/Sources/DedicatedServer/DedicatedServer.rc
+index 7117aaf33fe2f64670e38b544194996e11528e3a..94a42ea67def0f0d5832224972576fd028fc0105 100644
+--- a/SamTFE/Sources/DedicatedServer/DedicatedServer.rc
++++ b/SamTFE/Sources/DedicatedServer/DedicatedServer.rc
+@@ -7,7 +7,7 @@
+ //
+ // Generated from the TEXTINCLUDE 2 resource.
+ //
+-#include "afxres.h"
++#include <winres.h>
+ 
+ /////////////////////////////////////////////////////////////////////////////
+ #undef APSTUDIO_READONLY_SYMBOLS
+diff --git a/SamTFE/Sources/SeriousSam/SeriousSam.rc b/SamTFE/Sources/SeriousSam/SeriousSam.rc
+index 7f2af501b35e4f852216599b20a00827fdf88277..7fbec8914dd0824f59478c64536ea2065f30ae88 100644
+--- a/SamTFE/Sources/SeriousSam/SeriousSam.rc
++++ b/SamTFE/Sources/SeriousSam/SeriousSam.rc
+@@ -7,7 +7,7 @@
+ //
+ // Generated from the TEXTINCLUDE 2 resource.
+ //
+-#include "afxres.h"
++#include <winres.h>
+ 
+ /////////////////////////////////////////////////////////////////////////////
+ #undef APSTUDIO_READONLY_SYMBOLS
+diff --git a/SamTSE/Sources/DedicatedServer/DedicatedServer.rc b/SamTSE/Sources/DedicatedServer/DedicatedServer.rc
+index 7117aaf33fe2f64670e38b544194996e11528e3a..94a42ea67def0f0d5832224972576fd028fc0105 100644
+--- a/SamTSE/Sources/DedicatedServer/DedicatedServer.rc
++++ b/SamTSE/Sources/DedicatedServer/DedicatedServer.rc
+@@ -7,7 +7,7 @@
+ //
+ // Generated from the TEXTINCLUDE 2 resource.
+ //
+-#include "afxres.h"
++#include <winres.h>
+ 
+ /////////////////////////////////////////////////////////////////////////////
+ #undef APSTUDIO_READONLY_SYMBOLS
+diff --git a/SamTSE/Sources/SeriousSam/SeriousSam.rc b/SamTSE/Sources/SeriousSam/SeriousSam.rc
+index 7f2af501b35e4f852216599b20a00827fdf88277..7fbec8914dd0824f59478c64536ea2065f30ae88 100644
+--- a/SamTSE/Sources/SeriousSam/SeriousSam.rc
++++ b/SamTSE/Sources/SeriousSam/SeriousSam.rc
+@@ -7,7 +7,7 @@
+ //
+ // Generated from the TEXTINCLUDE 2 resource.
+ //
+-#include "afxres.h"
++#include <winres.h>
+ 
+ /////////////////////////////////////////////////////////////////////////////
+ #undef APSTUDIO_READONLY_SYMBOLS

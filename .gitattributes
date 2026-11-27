@@ -1,0 +1,5 @@
+# SPDX-FileCopyrightText: 2026 Handelsonderneming S.D. Broekhoven, trading as ITEagle Europe
+# SPDX-License-Identifier: GPL-2.0-only
+# Patch files are byte-exact git format-patch output (they may contain CRLF
+# lines from upstream files): never convert line endings.
+patches/**/*.patch -text

@@ -1,0 +1,65 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Fri, 27 Nov 2026 20:03:06 +0100
+Subject: [PATCH] build(win): force-include Engine/StdH.h in flex-generated
+ scanners
+
+The legacy skeletons dropped in 9cb83850 injected '#include
+"Engine/StdH.h"' at the top of the generated scanners. Restore that
+via ForcedIncludeFiles: SCANNER.CPP (PCH disabled for it, otherwise
+C1010) and Ska/Smcscan.cpp (already built without PCH).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ SamTFE/Sources/Engine/Engine.vcxproj | 6 +++++-
+ SamTSE/Sources/Engine/Engine.vcxproj | 6 +++++-
+ 2 files changed, 10 insertions(+), 2 deletions(-)
+
+diff --git a/SamTFE/Sources/Engine/Engine.vcxproj b/SamTFE/Sources/Engine/Engine.vcxproj
+index 5edbfb3e0adbda1c55cf3f58f6d6dc113b39c212..44ab1bf71936d6cf1ff4c8ea29d7f376a3c8c764 100755
+--- a/SamTFE/Sources/Engine/Engine.vcxproj
++++ b/SamTFE/Sources/Engine/Engine.vcxproj
+@@ -1100,7 +1100,10 @@ copy Release\$(TargetName).lib $(SolutionDir)..\Bin\ &gt;nul</Command>
+     <ClCompile Include="Classes\MovableModelEntity.cpp" />
+     <ClCompile Include="Base\Parser.cpp" />
+     <ClCompile Include="Classes\PlayerEntity.cpp" />
+-    <ClCompile Include="Base\SCANNER.CPP" />
++    <ClCompile Include="Base\SCANNER.CPP">
++      <PrecompiledHeader>NotUsing</PrecompiledHeader>
++      <ForcedIncludeFiles>Engine/StdH.h;%(ForcedIncludeFiles)</ForcedIncludeFiles>
++    </ClCompile>
+     <ClCompile Include="Ska\smcPars.cpp">
+       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+       </PrecompiledHeader>
+@@ -1112,6 +1115,7 @@ copy Release\$(TargetName).lib $(SolutionDir)..\Bin\ &gt;nul</Command>
+       </PrecompiledHeader>
+     </ClCompile>
+     <ClCompile Include="Ska\Smcscan.cpp">
++      <ForcedIncludeFiles>Engine/StdH.h;%(ForcedIncludeFiles)</ForcedIncludeFiles>
+       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+       </PrecompiledHeader>
+       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">
+diff --git a/SamTSE/Sources/Engine/Engine.vcxproj b/SamTSE/Sources/Engine/Engine.vcxproj
+index 89d4a073da5d6dd94948d881dd08ae6b124339d1..d9d849adef358ae0f13ee36df0bd1393773d3c5a 100755
+--- a/SamTSE/Sources/Engine/Engine.vcxproj
++++ b/SamTSE/Sources/Engine/Engine.vcxproj
+@@ -1100,7 +1100,10 @@ copy Release\$(TargetName).lib $(SolutionDir)..\Bin\ &gt;nul</Command>
+     <ClCompile Include="Classes\MovableModelEntity.cpp" />
+     <ClCompile Include="Base\Parser.cpp" />
+     <ClCompile Include="Classes\PlayerEntity.cpp" />
+-    <ClCompile Include="Base\SCANNER.CPP" />
++    <ClCompile Include="Base\SCANNER.CPP">
++      <PrecompiledHeader>NotUsing</PrecompiledHeader>
++      <ForcedIncludeFiles>Engine/StdH.h;%(ForcedIncludeFiles)</ForcedIncludeFiles>
++    </ClCompile>
+     <ClCompile Include="Ska\smcPars.cpp">
+       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+       </PrecompiledHeader>
+@@ -1112,6 +1115,7 @@ copy Release\$(TargetName).lib $(SolutionDir)..\Bin\ &gt;nul</Command>
+       </PrecompiledHeader>
+     </ClCompile>
+     <ClCompile Include="Ska\Smcscan.cpp">
++      <ForcedIncludeFiles>Engine/StdH.h;%(ForcedIncludeFiles)</ForcedIncludeFiles>
+       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
+       </PrecompiledHeader>
+       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">

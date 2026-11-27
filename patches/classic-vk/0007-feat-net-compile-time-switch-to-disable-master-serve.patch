@@ -1,0 +1,323 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Fri, 27 Nov 2026 21:14:41 +0100
+Subject: [PATCH] feat(net): compile-time switch to disable master-server
+ communication
+
+Add SSTRE_MASTER_SERVER (CMake option, default OFF; MSVC builds default
+to 0 via the source fallback). With 0, GameAgent in TFE and TSE never
+resolves, connects or sends to a master server:
+- no heartbeats from client-hosted or dedicated servers (ServerInit,
+  periodic heartbeat, state-changed and shutdown packets);
+- no internet server-list enumeration (EnumTrigger(bInternet) returns
+  with a console message; same for the non-legacy protocol);
+- default ga_strServer/ga_strMSLegacy are empty, and _initializeWinsock
+  no longer calls gethostbyname() for the master host.
+The server still binds net_iPort+1 and answers LAN status queries, LAN
+enumeration still works, and direct-IP join is unaffected.
+Build with -DSSTRE_MASTER_SERVER=ON (CMake) or /DSSTRE_MASTER_SERVER=1
+(MSVC, e.g. via the CL environment variable) for upstream behaviour.
+
+Background: ser_bEnumeration=0 does not stop the dedicated-server
+heartbeat (SSTRE EXP-001).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ SamTFE/Sources/CMakeLists.txt                 |  9 ++++
+ SamTFE/Sources/Engine/GameAgent/GameAgent.cpp | 49 ++++++++++++++++++-
+ SamTSE/Sources/CMakeLists.txt                 |  9 ++++
+ SamTSE/Sources/Engine/GameAgent/GameAgent.cpp | 49 ++++++++++++++++++-
+ 4 files changed, 112 insertions(+), 4 deletions(-)
+
+diff --git a/SamTFE/Sources/CMakeLists.txt b/SamTFE/Sources/CMakeLists.txt
+index 6c526637157555b0b94e9bc06460ac0f83973ec4..4fda3ca3cfc35f12d763f6bacaca08e49a2a6673 100644
+--- a/SamTFE/Sources/CMakeLists.txt
++++ b/SamTFE/Sources/CMakeLists.txt
+@@ -604,6 +604,15 @@ if(RPI4)
+     add_definitions(-DPLATFORM_RPI4=1)
+ endif()
+ 
++# SSTRE (POC-32): master-server communication (GameAgent heartbeats and the
++# internet server list). OFF in SSTRE builds; LAN and direct-IP play stay available.
++option(SSTRE_MASTER_SERVER "Enable GameAgent master-server communication" OFF)
++if(SSTRE_MASTER_SERVER)
++    add_definitions(-DSSTRE_MASTER_SERVER=1)
++else()
++    add_definitions(-DSSTRE_MASTER_SERVER=0)
++endif()
++
+ option(USE_TREMOR "Use Tremor instead of Vorbis" FALSE)
+ if (USE_TREMOR)
+     add_definitions(-DUSE_TREMOR=1)
+diff --git a/SamTFE/Sources/Engine/GameAgent/GameAgent.cpp b/SamTFE/Sources/Engine/GameAgent/GameAgent.cpp
+index 380b3191e1c94752bc784772fcc05d97f8e7069f..60ec8b7dfeba3b2f72143fcdc251add68ede6cef 100644
+--- a/SamTFE/Sources/Engine/GameAgent/GameAgent.cpp
++++ b/SamTFE/Sources/Engine/GameAgent/GameAgent.cpp
+@@ -27,6 +27,20 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #include <GameMP/SessionProperties.h>
+ #include <Engine/GameAgent/GameAgent.h>
+ 
++/* SSTRE modification (POC-32), 2026-11-27:
++   compile-time switch SSTRE_MASTER_SERVER for master-server communication.
++   Copyright (C) 2026 Handelsonderneming S.D. Broekhoven, trading as ITEagle Europe
++   SPDX-License-Identifier: GPL-2.0-only
++
++   SSTRE_MASTER_SERVER=0 (default when not defined): GameAgent never resolves,
++   contacts or sends to a master server (no heartbeats, no internet server
++   list). The server still answers LAN status queries on net_iPort+1 and the
++   client still enumerates LAN servers; direct-IP join is not affected.
++   SSTRE_MASTER_SERVER=1: upstream behaviour. */
++#ifndef SSTRE_MASTER_SERVER
++#define SSTRE_MASTER_SERVER 0
++#endif
++
+ #if defined(PLATFORM_WIN32)
+ #pragma comment(lib, "wsock32.lib")
+ WSADATA* _wsaData = NULL;
+@@ -179,9 +193,14 @@ rhea.333networks.com
+ 
+ */
+ //extern CTString ga_strServer = "master1.croteam.org";
++#if SSTRE_MASTER_SERVER
+ __extern CTString ga_strServer = "sam.ostap.eu";
+ //extern CTString ga_strMSLegacy = "master1.croteam.org";
+ __extern CTString ga_strMSLegacy = "sam.ostap.eu";
++#else
++__extern CTString ga_strServer = "";
++__extern CTString ga_strMSLegacy = "";
++#endif
+ 
+ __extern BOOL ga_bMSLegacy = TRUE;
+ //extern BOOL ga_bMSLegacy = FALSE;
+@@ -301,6 +320,7 @@ void _initializeWinsock(void)
+   }
+   _szBuffer = new char[2050];
+ 
++#if SSTRE_MASTER_SERVER
+   // get the host IP
+   hostent* phe;
+   #ifndef PLATFORM_FREEBSD
+@@ -333,6 +353,10 @@ void _initializeWinsock(void)
+   } else {
+     _sin->sin_port = htons(27900);
+   }
++#else
++  // SSTRE: no master-server destination; the socket is only used for LAN queries
++  _sin = NULL;
++#endif
+ 
+   // create the socket
+   _socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+@@ -403,6 +427,9 @@ void _uninitWinsock()
+ 
+ void _sendPacketTo(const char* szBuffer, sockaddr_in* addsin)
+ {
++  if (addsin == NULL) {
++    return; // SSTRE: master-server destination disabled
++  }
+   //DateTime(_datetime);
+   //CPrintF("[%s] Send sendto\n", _datetime);
+   sendto(_socket, szBuffer, strlen(szBuffer), 0, (sockaddr*)addsin, sizeof(sockaddr_in));
+@@ -445,6 +472,10 @@ const CSessionProperties* _getSP()
+ 
+ void _sendHeartbeat(INDEX iChallenge)
+ {
++#if !SSTRE_MASTER_SERVER
++  _tmLastHeartbeat = _pTimer->GetRealTimeTick();
++  return;
++#endif
+   CTString strPacket;
+   if (!ga_bMSLegacy) {
+     strPacket.PrintF("0;challenge;%d;players;%d;maxplayers;%d;level;%s;gametype;%s;version;%s;product;%s",
+@@ -495,6 +526,13 @@ extern void GameAgent_ServerInit(void)
+   _bServer = TRUE;
+   _bInitialized = TRUE;
+ 
++#if !SSTRE_MASTER_SERVER
++  DateTime(_datetime);
++  CPrintF("[%s] GameAgent: master server disabled at compile time (SSTRE_MASTER_SERVER=0), LAN queries only\n", _datetime);
++  _initializeWinsock();
++  _tmLastHeartbeat = _pTimer->GetRealTimeTick();
++  return;
++#endif
+   if (!ga_bMSLegacy) {
+     _sendPacketB("q");
+   } else {
+@@ -519,7 +557,7 @@ extern void GameAgent_ServerEnd(void)
+     return;
+   }
+ 
+-  if (ga_bMSLegacy) {
++  if (SSTRE_MASTER_SERVER && ga_bMSLegacy) {
+     CTString strPacket;
+     #ifdef FIRST_ENCOUNTER  // First Encounter
+     strPacket.PrintF("\\heartbeat\\%hu\\gamename\\serioussam\\statechanged", (_pShell->GetINDEX("net_iPort") + 1));
+@@ -808,7 +846,7 @@ extern void GameAgent_ServerUpdate(void)
+ /// Notify GameAgent that the server state has changed.
+ extern void GameAgent_ServerStateChanged(void)
+ {
+-  if (!_bInitialized) {
++  if (!_bInitialized || !SSTRE_MASTER_SERVER) {
+     return;
+   }
+   if (!ga_bMSLegacy) {
+@@ -835,6 +873,13 @@ extern void GameAgent_EnumTrigger(BOOL bInternet)
+   if ( _pNetwork->ga_bEnumerationChange ) {
+     return;
+   }
++#if !SSTRE_MASTER_SERVER
++  if (bInternet || !ga_bMSLegacy) {
++    DateTime(_datetime);
++    CPrintF("[%s] GameAgent: internet server list disabled at compile time (SSTRE_MASTER_SERVER=0)\n", _datetime);
++    return;
++  }
++#endif
+   
+   if ( !bInternet && ga_bMSLegacy) {
+     // make sure that there are no requests still stuck in buffer
+diff --git a/SamTSE/Sources/CMakeLists.txt b/SamTSE/Sources/CMakeLists.txt
+index 6f10e48691a78e09794cb63ac121cb71a00c270a..53313ac3dd8db14d5289a1e5cb889709bb68c094 100644
+--- a/SamTSE/Sources/CMakeLists.txt
++++ b/SamTSE/Sources/CMakeLists.txt
+@@ -604,6 +604,15 @@ if(RPI4)
+     add_definitions(-DPLATFORM_RPI4=1)
+ endif()
+ 
++# SSTRE (POC-32): master-server communication (GameAgent heartbeats and the
++# internet server list). OFF in SSTRE builds; LAN and direct-IP play stay available.
++option(SSTRE_MASTER_SERVER "Enable GameAgent master-server communication" OFF)
++if(SSTRE_MASTER_SERVER)
++    add_definitions(-DSSTRE_MASTER_SERVER=1)
++else()
++    add_definitions(-DSSTRE_MASTER_SERVER=0)
++endif()
++
+ option(USE_TREMOR "Use Tremor instead of Vorbis" FALSE)
+ if (USE_TREMOR)
+     add_definitions(-DUSE_TREMOR=1)
+diff --git a/SamTSE/Sources/Engine/GameAgent/GameAgent.cpp b/SamTSE/Sources/Engine/GameAgent/GameAgent.cpp
+index 380b3191e1c94752bc784772fcc05d97f8e7069f..60ec8b7dfeba3b2f72143fcdc251add68ede6cef 100644
+--- a/SamTSE/Sources/Engine/GameAgent/GameAgent.cpp
++++ b/SamTSE/Sources/Engine/GameAgent/GameAgent.cpp
+@@ -27,6 +27,20 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #include <GameMP/SessionProperties.h>
+ #include <Engine/GameAgent/GameAgent.h>
+ 
++/* SSTRE modification (POC-32), 2026-11-27:
++   compile-time switch SSTRE_MASTER_SERVER for master-server communication.
++   Copyright (C) 2026 Handelsonderneming S.D. Broekhoven, trading as ITEagle Europe
++   SPDX-License-Identifier: GPL-2.0-only
++
++   SSTRE_MASTER_SERVER=0 (default when not defined): GameAgent never resolves,
++   contacts or sends to a master server (no heartbeats, no internet server
++   list). The server still answers LAN status queries on net_iPort+1 and the
++   client still enumerates LAN servers; direct-IP join is not affected.
++   SSTRE_MASTER_SERVER=1: upstream behaviour. */
++#ifndef SSTRE_MASTER_SERVER
++#define SSTRE_MASTER_SERVER 0
++#endif
++
+ #if defined(PLATFORM_WIN32)
+ #pragma comment(lib, "wsock32.lib")
+ WSADATA* _wsaData = NULL;
+@@ -179,9 +193,14 @@ rhea.333networks.com
+ 
+ */
+ //extern CTString ga_strServer = "master1.croteam.org";
++#if SSTRE_MASTER_SERVER
+ __extern CTString ga_strServer = "sam.ostap.eu";
+ //extern CTString ga_strMSLegacy = "master1.croteam.org";
+ __extern CTString ga_strMSLegacy = "sam.ostap.eu";
++#else
++__extern CTString ga_strServer = "";
++__extern CTString ga_strMSLegacy = "";
++#endif
+ 
+ __extern BOOL ga_bMSLegacy = TRUE;
+ //extern BOOL ga_bMSLegacy = FALSE;
+@@ -301,6 +320,7 @@ void _initializeWinsock(void)
+   }
+   _szBuffer = new char[2050];
+ 
++#if SSTRE_MASTER_SERVER
+   // get the host IP
+   hostent* phe;
+   #ifndef PLATFORM_FREEBSD
+@@ -333,6 +353,10 @@ void _initializeWinsock(void)
+   } else {
+     _sin->sin_port = htons(27900);
+   }
++#else
++  // SSTRE: no master-server destination; the socket is only used for LAN queries
++  _sin = NULL;
++#endif
+ 
+   // create the socket
+   _socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+@@ -403,6 +427,9 @@ void _uninitWinsock()
+ 
+ void _sendPacketTo(const char* szBuffer, sockaddr_in* addsin)
+ {
++  if (addsin == NULL) {
++    return; // SSTRE: master-server destination disabled
++  }
+   //DateTime(_datetime);
+   //CPrintF("[%s] Send sendto\n", _datetime);
+   sendto(_socket, szBuffer, strlen(szBuffer), 0, (sockaddr*)addsin, sizeof(sockaddr_in));
+@@ -445,6 +472,10 @@ const CSessionProperties* _getSP()
+ 
+ void _sendHeartbeat(INDEX iChallenge)
+ {
++#if !SSTRE_MASTER_SERVER
++  _tmLastHeartbeat = _pTimer->GetRealTimeTick();
++  return;
++#endif
+   CTString strPacket;
+   if (!ga_bMSLegacy) {
+     strPacket.PrintF("0;challenge;%d;players;%d;maxplayers;%d;level;%s;gametype;%s;version;%s;product;%s",
+@@ -495,6 +526,13 @@ extern void GameAgent_ServerInit(void)
+   _bServer = TRUE;
+   _bInitialized = TRUE;
+ 
++#if !SSTRE_MASTER_SERVER
++  DateTime(_datetime);
++  CPrintF("[%s] GameAgent: master server disabled at compile time (SSTRE_MASTER_SERVER=0), LAN queries only\n", _datetime);
++  _initializeWinsock();
++  _tmLastHeartbeat = _pTimer->GetRealTimeTick();
++  return;
++#endif
+   if (!ga_bMSLegacy) {
+     _sendPacketB("q");
+   } else {
+@@ -519,7 +557,7 @@ extern void GameAgent_ServerEnd(void)
+     return;
+   }
+ 
+-  if (ga_bMSLegacy) {
++  if (SSTRE_MASTER_SERVER && ga_bMSLegacy) {
+     CTString strPacket;
+     #ifdef FIRST_ENCOUNTER  // First Encounter
+     strPacket.PrintF("\\heartbeat\\%hu\\gamename\\serioussam\\statechanged", (_pShell->GetINDEX("net_iPort") + 1));
+@@ -808,7 +846,7 @@ extern void GameAgent_ServerUpdate(void)
+ /// Notify GameAgent that the server state has changed.
+ extern void GameAgent_ServerStateChanged(void)
+ {
+-  if (!_bInitialized) {
++  if (!_bInitialized || !SSTRE_MASTER_SERVER) {
+     return;
+   }
+   if (!ga_bMSLegacy) {
+@@ -835,6 +873,13 @@ extern void GameAgent_EnumTrigger(BOOL bInternet)
+   if ( _pNetwork->ga_bEnumerationChange ) {
+     return;
+   }
++#if !SSTRE_MASTER_SERVER
++  if (bInternet || !ga_bMSLegacy) {
++    DateTime(_datetime);
++    CPrintF("[%s] GameAgent: internet server list disabled at compile time (SSTRE_MASTER_SERVER=0)\n", _datetime);
++    return;
++  }
++#endif
+   
+   if ( !bInternet && ga_bMSLegacy) {
+     // make sure that there are no requests still stuck in buffer

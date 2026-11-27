@@ -1,0 +1,1006 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Fri, 27 Nov 2026 21:26:08 +0100
+Subject: [PATCH] Add tests and fuzz loop for the KTX2 reader
+
+Tests/Ktx2Reader builds standalone (not part of the library build):
+- selftest: synthetic KTX2 files written from the spec (2D, odd sizes,
+  mipPadding, 1D, 3D, arrays, cubemaps, cubemap arrays, levelCount 0,
+  hand-built Zstandard raw/skippable/multi-frame data) plus one negative
+  case per error path
+- info / extract: dump header, level index and images for black-box
+  comparison with the official KTX-Software tool (corpus_compare.py)
+- fuzz: structure-aware mutation loop with invariant checks, intended
+  to run under AddressSanitizer/UBSan
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ Tests/Ktx2Reader/CMakeLists.txt     |  29 ++
+ Tests/Ktx2Reader/Ktx2ReaderTest.cpp | 706 ++++++++++++++++++++++++++++
+ Tests/Ktx2Reader/corpus_compare.py  | 231 +++++++++
+ 3 files changed, 966 insertions(+)
+
+diff --git a/Tests/Ktx2Reader/CMakeLists.txt b/Tests/Ktx2Reader/CMakeLists.txt
+new file mode 100644
+index 0000000000000000000000000000000000000000..39bb1d7de3cb1957fdcbc4210dcca2632d6dcb23
+--- /dev/null
++++ b/Tests/Ktx2Reader/CMakeLists.txt
+@@ -0,0 +1,29 @@
++# SPDX-License-Identifier: GPL-2.0-only
++# Copyright (C) 2026 Handelsonderneming S.D. Broekhoven, trading as ITEagle Europe
++#
++# Standalone build of the KTX2 reader tests (not part of the RTGL1 library build):
++#   cmake -S Tests/Ktx2Reader -B <build> -G Ninja [-DKTX2_TEST_ASAN=ON]
++cmake_minimum_required(VERSION 3.15)
++project(Ktx2ReaderTest CXX C)
++set(CMAKE_CXX_STANDARD 17)
++option(KTX2_TEST_ASAN "Build with AddressSanitizer" OFF)
++
++set(RTGL1_SOURCE "${CMAKE_CURRENT_LIST_DIR}/../../Source")
++add_executable(Ktx2ReaderTest
++    Ktx2ReaderTest.cpp
++    "${RTGL1_SOURCE}/Ktx2Reader.cpp"
++    "${RTGL1_SOURCE}/zstd/zstddeclib.c")
++target_include_directories(Ktx2ReaderTest PRIVATE "${RTGL1_SOURCE}" "${RTGL1_SOURCE}/zstd")
++if (MSVC)
++    target_compile_options(Ktx2ReaderTest PRIVATE /W4 /EHsc)
++    if (KTX2_TEST_ASAN)
++        target_compile_options(Ktx2ReaderTest PRIVATE /fsanitize=address /Zi)
++        target_link_options(Ktx2ReaderTest PRIVATE /INCREMENTAL:NO /DEBUG)
++    endif()
++else()
++    target_compile_options(Ktx2ReaderTest PRIVATE -Wall -Wextra)
++    if (KTX2_TEST_ASAN)
++        target_compile_options(Ktx2ReaderTest PRIVATE -fsanitize=address,undefined -fno-omit-frame-pointer -g)
++        target_link_options(Ktx2ReaderTest PRIVATE -fsanitize=address,undefined)
++    endif()
++endif()
+diff --git a/Tests/Ktx2Reader/Ktx2ReaderTest.cpp b/Tests/Ktx2Reader/Ktx2ReaderTest.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..f3da0b924b031d2c2e58e2009756bca29240478e
+--- /dev/null
++++ b/Tests/Ktx2Reader/Ktx2ReaderTest.cpp
+@@ -0,0 +1,706 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// Copyright (C) 2026 Handelsonderneming S.D. Broekhoven, trading as ITEagle Europe
++//
++// Tests for the clean-room KTX2 reader (Source/Ktx2Reader.h).
++//
++//   Ktx2ReaderTest selftest
++//   Ktx2ReaderTest info    <file.ktx2>              JSON: header, index, levels
++//   Ktx2ReaderTest extract <file.ktx2> <out-dir>    one raw file per level/layer/face
++//   Ktx2ReaderTest fuzz <iterations> <seed> <file.ktx2>...
++
++#include "Ktx2Reader.h"
++
++#include <algorithm>
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++#include <cstring>
++#include <iterator>
++#include <map>
++#include <memory>
++#include <random>
++#include <string>
++#include <vector>
++
++using namespace RTGL1;
++using Bytes = std::vector< uint8_t >;
++
++// ---------------------------------------------------------------------------
++// helpers
++
++static bool ReadWholeFile( const char *path, Bytes *out )
++{
++    FILE *f = std::fopen( path, "rb" );
++    if( !f )
++        return false;
++    uint8_t buf[ 65536 ];
++    size_t  n;
++    while( ( n = std::fread( buf, 1, sizeof buf, f ) ) > 0 )
++        out->insert( out->end(), buf, buf + n );
++    std::fclose( f );
++    return true;
++}
++
++static void Put32( Bytes &b, size_t at, uint32_t v )
++{
++    for( int i = 0; i < 4; i++ )
++        b[ at + i ] = uint8_t( v >> ( 8 * i ) );
++}
++static void Put64( Bytes &b, size_t at, uint64_t v )
++{
++    for( int i = 0; i < 8; i++ )
++        b[ at + i ] = uint8_t( v >> ( 8 * i ) );
++}
++static uint32_t Lcm4( uint32_t blockBytes )
++{
++    uint32_t g = blockBytes % 4 == 0 ? 4 : blockBytes % 2 == 0 ? 2 : 1;
++    return blockBytes * 4 / g;
++}
++static void Append32( Bytes &b, uint32_t v )
++{
++    b.resize( b.size() + 4 );
++    Put32( b, b.size() - 4, v );
++}
++
++// ---------------------------------------------------------------------------
++// A minimal KTX2 writer, written from the spec, used only to build test input.
++
++enum class Zstd
++{
++    None,
++    RawFrame,          // one Zstandard frame of raw blocks
++    SkippableThenRaw,  // skippable frame + raw frame
++    TwoFrames,         // level split into two raw frames
++};
++
++struct SynthDesc
++{
++    uint32_t vkFormat   = 37; // VK_FORMAT_R8G8B8A8_UNORM
++    uint32_t typeSize   = 1;
++    uint32_t width      = 16;
++    uint32_t height     = 8;
++    uint32_t depth      = 0;
++    uint32_t layers     = 0;
++    uint32_t faces      = 1;
++    uint32_t levelCount = 3;
++    Zstd     zstd       = Zstd::None;
++    bool     withKvd    = true;
++};
++
++struct Synth
++{
++    Bytes                file;
++    std::vector< Bytes > levelData; // expected inflated bytes, base first
++    size_t               levelIndexAt = 0;
++    size_t               dfdAt = 0, kvdAt = 0;
++};
++
++static void AppendZstdRawFrame( Bytes &out, const uint8_t *p, size_t n )
++{
++    // RFC 8878 3.1.1: magic, frame header (single segment, 4-byte FCS), blocks
++    Append32( out, 0xFD2FB528u );
++    out.push_back( 0xA0 ); // FCS_Field_Size=2 (4 bytes), Single_Segment=1
++    Append32( out, uint32_t( n ) );
++    const size_t maxBlock = 128 * 1024;
++    size_t       pos      = 0;
++    do
++    {
++        size_t   len  = std::min( maxBlock, n - pos );
++        bool     last = pos + len == n;
++        uint32_t bh   = ( last ? 1u : 0u ) | ( 0u << 1 ) | uint32_t( len ) << 3; // Raw_Block
++        out.push_back( uint8_t( bh ) );
++        out.push_back( uint8_t( bh >> 8 ) );
++        out.push_back( uint8_t( bh >> 16 ) );
++        out.insert( out.end(), p + pos, p + pos + len );
++        pos += len;
++    } while( pos < n );
++}
++
++static Bytes Compress( const Bytes &raw, Zstd mode )
++{
++    Bytes out;
++    switch( mode )
++    {
++        case Zstd::None: return raw;
++        case Zstd::RawFrame: AppendZstdRawFrame( out, raw.data(), raw.size() ); break;
++        case Zstd::SkippableThenRaw:
++            Append32( out, 0x184D2A53u );
++            Append32( out, 5 );
++            for( int i = 0; i < 5; i++ )
++                out.push_back( 0xEE );
++            AppendZstdRawFrame( out, raw.data(), raw.size() );
++            break;
++        case Zstd::TwoFrames:
++        {
++            size_t half = raw.size() / 2;
++            AppendZstdRawFrame( out, raw.data(), half );
++            AppendZstdRawFrame( out, raw.data() + half, raw.size() - half );
++            break;
++        }
++    }
++    return out;
++}
++
++static Synth MakeKtx2( const SynthDesc &d, uint32_t seed = 1 )
++{
++    const Ktx2::FormatInfo *f = Ktx2::FindFormat( d.vkFormat );
++    if( !f )
++    {
++        std::fprintf( stderr, "MakeKtx2: unknown format\n" );
++        std::exit( 2 );
++    }
++    std::mt19937 rng( seed );
++    Synth        s;
++    uint32_t     numLevels = d.levelCount == 0 ? 1 : d.levelCount;
++    uint32_t     layers    = d.layers == 0 ? 1 : d.layers;
++
++    for( uint32_t p = 0; p < numLevels; p++ )
++    {
++        uint32_t w  = std::max( 1u, d.width >> p );
++        uint32_t h  = std::max( 1u, d.height >> p );
++        uint32_t dd = std::max( 1u, d.depth >> p );
++        size_t   n  = size_t( f->blockBytes ) * ( ( w + f->blockWidth - 1 ) / f->blockWidth ) *
++                   ( ( h + f->blockHeight - 1 ) / f->blockHeight ) *
++                   ( ( dd + f->blockDepth - 1 ) / f->blockDepth ) * layers * d.faces;
++        Bytes lv( n );
++        for( auto &x : lv )
++            x = uint8_t( rng() );
++        s.levelData.push_back( std::move( lv ) );
++    }
++
++    Bytes &b = s.file;
++    b.assign( 80 + 24 * numLevels, 0 );
++    const uint8_t id[ 12 ] = { 0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A };
++    std::memcpy( b.data(), id, 12 );
++    Put32( b, 12, d.vkFormat );
++    Put32( b, 16, d.typeSize );
++    Put32( b, 20, d.width );
++    Put32( b, 24, d.height );
++    Put32( b, 28, d.depth );
++    Put32( b, 32, d.layers );
++    Put32( b, 36, d.faces );
++    Put32( b, 40, d.levelCount );
++    Put32( b, 44, d.zstd == Zstd::None ? 0 : 2 );
++    s.levelIndexAt = 80;
++
++    // DFD: dfdTotalSize + a 24-byte dummy block (content is not interpreted)
++    s.dfdAt = b.size();
++    Append32( b, 28 );
++    for( int i = 0; i < 6; i++ )
++        Append32( b, 0 );
++    Put32( b, 48, uint32_t( s.dfdAt ) );
++    Put32( b, 52, 28 );
++
++    if( d.withKvd )
++    {
++        s.kvdAt                 = b.size();
++        const char key[]        = "KTXwriter";
++        const char val[]        = "Ktx2ReaderTest";
++        uint32_t   kvLen        = uint32_t( sizeof key + sizeof val );
++        Append32( b, kvLen );
++        b.insert( b.end(), key, key + sizeof key );
++        b.insert( b.end(), val, val + sizeof val );
++        while( b.size() % 4 )
++            b.push_back( 0 );
++        Put32( b, 56, uint32_t( s.kvdAt ) );
++        Put32( b, 60, uint32_t( b.size() - s.kvdAt ) );
++    }
++
++    uint32_t align = d.zstd == Zstd::None ? Lcm4( f->blockBytes ) : 1;
++    // smallest level first
++    for( int p = int( numLevels ) - 1; p >= 0; p-- )
++    {
++        while( b.size() % align )
++            b.push_back( 0 );
++        Bytes  stored = Compress( s.levelData[ p ], d.zstd );
++        size_t at     = b.size();
++        b.insert( b.end(), stored.begin(), stored.end() );
++        Put64( b, 80 + 24 * p + 0, at );
++        Put64( b, 80 + 24 * p + 8, stored.size() );
++        Put64( b, 80 + 24 * p + 16, s.levelData[ p ].size() );
++    }
++    return s;
++}
++
++// ---------------------------------------------------------------------------
++// invariants checked after every successful Read (also used by the fuzzer)
++
++static bool CheckInvariants( const Ktx2::Texture &t, std::string *why )
++{
++    const Ktx2::FormatInfo *f = Ktx2::FindFormat( t.vkFormat );
++    if( !f )
++        return *why = "format", false;
++    if( t.levels.size() != t.NumLevels() )
++        return *why = "level count", false;
++    size_t prevEnd = 0;
++    for( size_t p = 0; p < t.levels.size(); p++ )
++    {
++        const Ktx2::Level &l = t.levels[ p ];
++        if( l.dataOffset < prevEnd || l.dataOffset > t.data.size() ||
++            l.dataSize > t.data.size() - l.dataOffset )
++            return *why = "level range", false;
++        if( l.dataOffset % Lcm4( f->blockBytes ) != 0 )
++            return *why = "alignment", false;
++        if( l.imageSize * t.NumLayers() * t.faceCount != l.dataSize )
++            return *why = "image size", false;
++        if( l.uncompressedByteLength != l.dataSize )
++            return *why = "uncompressed", false;
++        prevEnd = l.dataOffset + l.dataSize;
++        for( uint32_t layer = 0; layer < t.NumLayers(); layer++ )
++            for( uint32_t face = 0; face < t.faceCount; face++ )
++            {
++                size_t off;
++                if( !t.GetImageOffset( uint32_t( p ), layer, face, &off ) ||
++                    off + l.imageSize > l.dataOffset + l.dataSize )
++                    return *why = "image offset", false;
++            }
++    }
++    size_t dummy;
++    if( t.GetImageOffset( uint32_t( t.levels.size() ), 0, 0, &dummy ) ||
++        t.GetImageOffset( 0, t.NumLayers(), 0, &dummy ) ||
++        t.GetImageOffset( 0, 0, t.faceCount, &dummy ) )
++        return *why = "out-of-range image accepted", false;
++    return true;
++}
++
++// ---------------------------------------------------------------------------
++// selftest
++
++static int g_pass = 0, g_fail = 0;
++
++static void Expect( bool cond, const std::string &name )
++{
++    if( cond )
++        g_pass++;
++    else
++    {
++        g_fail++;
++        std::printf( "FAIL: %s\n", name.c_str() );
++    }
++}
++
++static Ktx2::Result ReadExact( const Bytes &file, Ktx2::Texture *t, const Ktx2::Limits &lim = {} )
++{
++    // exact-size heap copy so that sanitizers catch any over-read
++    std::unique_ptr< uint8_t[] > copy( new uint8_t[ file.size() ? file.size() : 1 ] );
++    if( !file.empty() )
++        std::memcpy( copy.get(), file.data(), file.size() );
++    return Ktx2::Read( copy.get(), file.size(), t, lim );
++}
++
++static void ExpectValid( const SynthDesc &d, const std::string &name )
++{
++    Synth         s = MakeKtx2( d );
++    Ktx2::Texture t;
++    Ktx2::Result  r = ReadExact( s.file, &t );
++    Expect( r == Ktx2::Result::Success, name + " reads (" + Ktx2::ResultToString( r ) + ")" );
++    if( r != Ktx2::Result::Success )
++        return;
++    std::string why;
++    Expect( CheckInvariants( t, &why ), name + " invariants " + why );
++    bool same = t.levels.size() == s.levelData.size();
++    for( size_t p = 0; same && p < t.levels.size(); p++ )
++        same = t.levels[ p ].dataSize == s.levelData[ p ].size() &&
++               std::memcmp( t.data.data() + t.levels[ p ].dataOffset, s.levelData[ p ].data(),
++                            s.levelData[ p ].size() ) == 0;
++    Expect( same, name + " level bytes" );
++    Expect( t.vkFormat == d.vkFormat && t.pixelWidth == d.width && t.pixelHeight == d.height &&
++                t.layerCount == d.layers && t.faceCount == d.faces,
++            name + " header passthrough" );
++    if( d.withKvd )
++    {
++        const Ktx2::KeyValue *kv = t.FindKey( "KTXwriter" );
++        Expect( kv && kv->value.size() == 15 && std::memcmp( kv->value.data(), "Ktx2ReaderTest", 15 ) == 0,
++                name + " KTXwriter" );
++    }
++}
++
++static void ExpectError( const Bytes &file, Ktx2::Result want, const std::string &name,
++                         const Ktx2::Limits &lim = {} )
++{
++    Ktx2::Texture t;
++    Ktx2::Result  r = ReadExact( file, &t, lim );
++    Expect( r == want, name + " -> " + Ktx2::ResultToString( want ) + " (got " + Ktx2::ResultToString( r ) + ")" );
++    Expect( t.levels.empty() && t.data.empty(), name + " leaves output empty" );
++}
++
++static void SelfTest()
++{
++    // --- valid files
++    SynthDesc d;
++    ExpectValid( d, "rgba8 2d 3 levels" );
++    d.levelCount = 0;
++    ExpectValid( d, "rgba8 levelCount=0" );
++    d = {};
++    d.width = 13, d.height = 7, d.levelCount = 4;
++    ExpectValid( d, "rgba8 odd 13x7" );
++    d = {};
++    d.vkFormat = 23, d.width = 5, d.height = 3, d.levelCount = 3; // R8G8B8_UNORM, needs mipPadding (lcm 12)
++    ExpectValid( d, "rgb8 odd padding" );
++    d = {};
++    d.vkFormat = 131, d.width = 10, d.height = 6, d.levelCount = 4; // BC1 odd size
++    ExpectValid( d, "bc1 odd 10x6" );
++    d = {};
++    d.vkFormat = 145, d.width = 64, d.height = 32, d.layers = 3, d.levelCount = 7; // BC7 array
++    ExpectValid( d, "bc7 array" );
++    d = {};
++    d.vkFormat = 137, d.width = 32, d.height = 32, d.faces = 6, d.levelCount = 6; // BC3 cube
++    ExpectValid( d, "bc3 cubemap" );
++    d.layers = 2;
++    ExpectValid( d, "bc3 cubemap array" );
++    d = {};
++    d.width = 8, d.height = 8, d.depth = 4, d.levelCount = 4;
++    ExpectValid( d, "rgba8 3d" );
++    d = {};
++    d.width = 16, d.height = 0, d.levelCount = 5;
++    ExpectValid( d, "rgba8 1d" );
++    d = {};
++    d.withKvd = false;
++    ExpectValid( d, "no kvd" );
++    for( Zstd z : { Zstd::RawFrame, Zstd::SkippableThenRaw, Zstd::TwoFrames } )
++    {
++        d = {};
++        d.zstd = z, d.vkFormat = 141, d.width = 40, d.height = 24, d.layers = 2, d.levelCount = 5; // BC5
++        ExpectValid( d, "zstd bc5 mode " + std::to_string( int( z ) ) );
++    }
++    d = {};
++    d.zstd = Zstd::RawFrame, d.width = 256, d.height = 256, d.levelCount = 1; // >128 KiB: multi-block
++    ExpectValid( d, "zstd multi-block" );
++
++    // --- error paths
++    Synth base = MakeKtx2( SynthDesc{} );
++    Bytes f;
++
++    ExpectError( {}, Ktx2::Result::ErrorTruncated, "empty" );
++    for( size_t cut : { size_t( 1 ), size_t( 79 ), size_t( 103 ), base.file.size() - 1 } )
++    {
++        f = base.file;
++        f.resize( cut );
++        ExpectError( f, Ktx2::Result::ErrorTruncated, "truncated to " + std::to_string( cut ) );
++    }
++    f = base.file, f[ 5 ] = '1';
++    ExpectError( f, Ktx2::Result::ErrorIdentifier, "KTX 11 identifier" );
++    f = base.file, f[ 0 ] = 0x2B;
++    ExpectError( f, Ktx2::Result::ErrorIdentifier, "bit 7 cleared" );
++
++    for( uint32_t fmt : { 0u, 11u /*USCALED*/, 1000156003u /*2PLANE*/, 1000054000u /*PVRTC*/, 0xDEADBEEFu } )
++    {
++        f = base.file, Put32( f, 12, fmt );
++        ExpectError( f, Ktx2::Result::ErrorUnsupportedFormat, "vkFormat " + std::to_string( fmt ) );
++    }
++    for( uint32_t sc : { 1u, 3u, 4u, 0x10000u, 0xFFFFFFFFu } )
++    {
++        f = base.file, Put32( f, 44, sc );
++        ExpectError( f, Ktx2::Result::ErrorUnsupportedSupercompression, "scheme " + std::to_string( sc ) );
++    }
++    f = base.file, Put32( f, 20, 0 );
++    ExpectError( f, Ktx2::Result::ErrorInvalidDimensions, "width 0" );
++    f = base.file, Put32( f, 24, 0 ), Put32( f, 28, 4 );
++    ExpectError( f, Ktx2::Result::ErrorInvalidDimensions, "1d with depth" );
++    {
++        SynthDesc bc;
++        bc.vkFormat = 131, bc.width = 8, bc.height = 8, bc.levelCount = 1;
++        Synth s = MakeKtx2( bc );
++        f = s.file, Put32( f, 24, 0 );
++        ExpectError( f, Ktx2::Result::ErrorInvalidDimensions, "bc1 with height 0" );
++    }
++    f = base.file, Put32( f, 36, 2 );
++    ExpectError( f, Ktx2::Result::ErrorInvalidTextureType, "faceCount 2" );
++    f = base.file, Put32( f, 36, 6 ); // 16x8 is not square
++    ExpectError( f, Ktx2::Result::ErrorInvalidTextureType, "non-square cubemap" );
++    f = base.file, Put32( f, 20, 100000 );
++    ExpectError( f, Ktx2::Result::ErrorLimitExceeded, "width > limit" );
++    f = base.file, Put32( f, 32, 0x7FFFFFFF );
++    ExpectError( f, Ktx2::Result::ErrorLimitExceeded, "layers > limit" );
++    f = base.file, Put32( f, 40, 6 ); // 16x8 allows 5 levels
++    ExpectError( f, Ktx2::Result::ErrorInvalidLevelCount, "levelCount > log2+1" );
++    f = base.file, Put32( f, 40, 0xFFFFFFFF );
++    ExpectError( f, Ktx2::Result::ErrorInvalidLevelCount, "levelCount huge" );
++    {
++        // claim 16 levels but give a file too short for the level index
++        Bytes small( base.file.begin(), base.file.begin() + 104 );
++        Put32( small, 20, 1u << 15 ), Put32( small, 24, 1 ), Put32( small, 40, 16 );
++        ExpectError( small, Ktx2::Result::ErrorTruncated, "level index beyond EOF" );
++    }
++
++    // DFD
++    f = base.file, Put32( f, 52, 0 );
++    ExpectError( f, Ktx2::Result::ErrorInvalidIndex, "dfd length 0" );
++    f = base.file, Put32( f, 48, 0xFFFFFFF0 );
++    ExpectError( f, Ktx2::Result::ErrorTruncated, "dfd offset beyond EOF" );
++    f = base.file, Put32( f, base.dfdAt, 32 );
++    ExpectError( f, Ktx2::Result::ErrorInvalidIndex, "dfdTotalSize mismatch" );
++    f = base.file, Put32( f, 48, 52 ); // u32 at 52 is dfdByteLength (28) itself
++    ExpectError( f, Ktx2::Result::ErrorInvalidIndex, "dfd overlaps header" );
++    // KVD
++    f = base.file, Put32( f, 60, 0x7FFFFFFF );
++    ExpectError( f, Ktx2::Result::ErrorTruncated, "kvd beyond EOF" );
++    f = base.file, Put32( f, 56, uint32_t( base.dfdAt ) );
++    ExpectError( f, Ktx2::Result::ErrorInvalidIndex, "kvd overlaps dfd" );
++    f = base.file, Put32( f, base.kvdAt, 0 );
++    ExpectError( f, Ktx2::Result::ErrorInvalidKeyValueData, "kv length 0" );
++    f = base.file, Put32( f, base.kvdAt, 1000 );
++    ExpectError( f, Ktx2::Result::ErrorInvalidKeyValueData, "kv length beyond kvd" );
++    f = base.file;
++    for( size_t i = base.kvdAt + 4; i < base.kvdAt + 4 + 10; i++ )
++        f[ i ] = 'A';
++    for( size_t i = base.kvdAt + 4 + 10; i < base.kvdAt + 4 + 25; i++ )
++        f[ i ] = 'B';
++    ExpectError( f, Ktx2::Result::ErrorInvalidKeyValueData, "kv key without NUL" );
++    f = base.file, f[ base.kvdAt + 4 ] = 0;
++    ExpectError( f, Ktx2::Result::ErrorInvalidKeyValueData, "kv empty key" );
++    // SGD
++    f = base.file, Put64( f, 64, 200 ), Put64( f, 72, 8 );
++    ExpectError( f, Ktx2::Result::ErrorInvalidIndex, "sgd with scheme 0" );
++
++    // Level index (levels: p at 80 + 24p)
++    f = base.file, Put64( f, 80 + 8, 0 );
++    ExpectError( f, Ktx2::Result::ErrorInvalidLevelIndex, "level byteLength 0" );
++    f = base.file, Put64( f, 80, 0xFFFFFFFFFFFFFF00ull );
++    ExpectError( f, Ktx2::Result::ErrorTruncated, "level offset huge" );
++    f = base.file, Put64( f, 80 + 8, 0xFFFFFFFFFFFFFFFFull );
++    ExpectError( f, Ktx2::Result::ErrorTruncated, "level length huge (overflow)" );
++    f = base.file, Put64( f, 80, 0 );
++    ExpectError( f, Ktx2::Result::ErrorInvalidLevelIndex, "level overlaps header" );
++    {
++        f = base.file;
++        uint64_t o0;
++        std::memcpy( &o0, &f[ 80 ], 8 );
++        Put64( f, 80 + 24, o0 );
++        // level1 now claims level0's position: overlap/order violation
++        ExpectError( f, Ktx2::Result::ErrorInvalidLevelIndex, "level 1 not before level 0" );
++    }
++    f = base.file, Put64( f, 80 + 16, 16 * 8 * 4 - 4 ), Put64( f, 80 + 8, 16 * 8 * 4 - 4 );
++    ExpectError( f, Ktx2::Result::ErrorInvalidLevelSize, "level 0 size != expected" );
++    f = base.file, Put64( f, 80 + 16, 16 * 8 * 4 * 2 );
++    ExpectError( f, Ktx2::Result::ErrorInvalidLevelSize, "uncompressed != byteLength (scheme 0)" );
++
++    // Zstandard
++    {
++        SynthDesc z;
++        z.zstd = Zstd::RawFrame, z.width = 16, z.height = 16, z.levelCount = 1;
++        Synth zs = MakeKtx2( z );
++        uint64_t off;
++        std::memcpy( &off, &zs.file[ 80 ], 8 );
++        f = zs.file, f[ off ] ^= 0xFF;
++        ExpectError( f, Ktx2::Result::ErrorDecompression, "zstd bad magic" );
++        f = zs.file, Put32( f, size_t( off ) + 5, 16 * 16 * 4 + 64 ); // FCS larger than level
++        ExpectError( f, Ktx2::Result::ErrorDecompression, "zstd frame content too large" );
++        f = zs.file, Put32( f, size_t( off ) + 5, 16 * 16 * 4 - 64 );
++        ExpectError( f, Ktx2::Result::ErrorDecompression, "zstd frame content too small" );
++        f = zs.file;
++        Put64( f, 80 + 8, zs.file.size() - off - 10 ); // cut the frame short
++        ExpectError( f, Ktx2::Result::ErrorDecompression, "zstd truncated frame" );
++        f = zs.file, Put64( f, 80 + 16, 16 * 16 * 4 * 2 );
++        ExpectError( f, Ktx2::Result::ErrorInvalidLevelSize, "zstd uncompressedByteLength wrong" );
++        // decompression bomb guard: declared size larger than the limit
++        Ktx2::Limits lim;
++        lim.maxDataBytes = 1000;
++        ExpectError( zs.file, Ktx2::Result::ErrorLimitExceeded, "data larger than limit", lim );
++    }
++
++    std::printf( "selftest: %d passed, %d failed\n", g_pass, g_fail );
++}
++
++// ---------------------------------------------------------------------------
++// info / extract (for black-box comparison with the official tools)
++
++static int Info( const char *path )
++{
++    Ktx2::Texture t;
++    Ktx2::Result  r = Ktx2::ReadFile( path, &t );
++    if( r != Ktx2::Result::Success )
++    {
++        std::printf( "{\"ok\":false,\"error\":\"%s\"}\n", Ktx2::ResultToString( r ) );
++        return 1;
++    }
++    std::string why;
++    bool        inv = CheckInvariants( t, &why );
++    std::printf( "{\"ok\":true,\"invariants\":%s,\"vkFormat\":%u,\"typeSize\":%u,\"pixelWidth\":%u,"
++                 "\"pixelHeight\":%u,\"pixelDepth\":%u,\"layerCount\":%u,\"faceCount\":%u,"
++                 "\"levelCount\":%u,\"supercompressionScheme\":%u,\"dataSize\":%zu,\"levels\":[",
++                 inv ? "true" : "false", t.vkFormat, t.typeSize, t.pixelWidth, t.pixelHeight,
++                 t.pixelDepth, t.layerCount, t.faceCount, t.levelCount, t.supercompressionScheme,
++                 t.data.size() );
++    for( size_t p = 0; p < t.levels.size(); p++ )
++    {
++        const Ktx2::Level &l = t.levels[ p ];
++        std::printf( "%s{\"byteOffset\":%llu,\"byteLength\":%llu,\"uncompressedByteLength\":%llu,"
++                     "\"dataOffset\":%zu,\"imageSize\":%zu,\"width\":%u,\"height\":%u,\"depth\":%u}",
++                     p ? "," : "", (unsigned long long)l.fileByteOffset,
++                     (unsigned long long)l.fileByteLength,
++                     (unsigned long long)l.uncompressedByteLength, l.dataOffset, l.imageSize,
++                     l.width, l.height, l.depth );
++    }
++    std::printf( "],\"keys\":[" );
++    for( size_t i = 0; i < t.keyValues.size(); i++ )
++        std::printf( "%s\"%s\"", i ? "," : "", t.keyValues[ i ].key.c_str() );
++    std::printf( "]}\n" );
++    return inv ? 0 : 1;
++}
++
++static int Extract( const char *path, const char *outDir )
++{
++    Ktx2::Texture t;
++    Ktx2::Result  r = Ktx2::ReadFile( path, &t );
++    if( r != Ktx2::Result::Success )
++    {
++        std::fprintf( stderr, "%s\n", Ktx2::ResultToString( r ) );
++        return 1;
++    }
++    for( uint32_t p = 0; p < t.levels.size(); p++ )
++        for( uint32_t layer = 0; layer < t.NumLayers(); layer++ )
++            for( uint32_t face = 0; face < t.faceCount; face++ )
++            {
++                size_t off;
++                t.GetImageOffset( p, layer, face, &off );
++                char name[ 1024 ];
++                std::snprintf( name, sizeof name, "%s/level%u_layer%u_face%u.raw", outDir, p, layer, face );
++                FILE *f = std::fopen( name, "wb" );
++                if( !f )
++                    return 1;
++                std::fwrite( t.data.data() + off, 1, t.levels[ p ].imageSize, f );
++                std::fclose( f );
++            }
++    return 0;
++}
++
++// ---------------------------------------------------------------------------
++// fuzz: structure-aware mutations of seed files; asserts invariants
++
++static int Fuzz( uint64_t iterations, uint32_t seed, const std::vector< Bytes > &seeds )
++{
++    std::mt19937_64                rng( seed );
++    std::map< std::string, uint64_t > results;
++    uint64_t                       failures = 0;
++    auto                           t0       = std::chrono::steady_clock::now();
++
++    static const uint64_t interesting[] = {
++        0, 1, 2, 3, 4, 6, 7, 8, 0x7F, 0x80, 0xFF, 0x100, 0xFFFF, 0x10000, 0x7FFFFFFF, 0x80000000,
++        0xFFFFFFFF, 0x100000000ull, 0x7FFFFFFFFFFFFFFFull, 0xFFFFFFFFFFFFFFFFull,
++    };
++
++    Ktx2::Limits lim;
++    lim.maxDataBytes = 64u << 20; // keep each iteration cheap
++
++    for( uint64_t it = 0; it < iterations; it++ )
++    {
++        Bytes f = seeds[ rng() % seeds.size() ];
++        int   n = 1 + int( rng() % 4 );
++        for( int m = 0; m < n && !f.empty(); m++ )
++        {
++            switch( rng() % 7 )
++            {
++                case 0: f[ rng() % f.size() ] ^= uint8_t( 1u << ( rng() % 8 ) ); break;
++                case 1: f[ rng() % f.size() ] = uint8_t( rng() ); break;
++                case 2: // header/index/level-index field (4- or 8-byte aligned)
++                {
++                    size_t lim2 = std::min< size_t >( f.size(), 80 + 24 * 16 );
++                    size_t at   = 12 + ( rng() % std::max< size_t >( 1, lim2 > 12 ? ( lim2 - 12 ) / 4 : 1 ) ) * 4;
++                    uint64_t v  = rng() % 2 ? interesting[ rng() % std::size( interesting ) ] : rng();
++                    size_t   w  = rng() % 2 ? 4 : 8;
++                    for( size_t i = 0; i < w && at + i < f.size(); i++ )
++                        f[ at + i ] = uint8_t( v >> ( 8 * i ) );
++                    break;
++                }
++                case 3: f.resize( rng() % ( f.size() + 1 ) ); break;
++                case 4: // small +/- delta on a 32-bit field
++                {
++                    size_t at = ( rng() % ( f.size() / 4 + 1 ) ) * 4;
++                    if( at + 4 <= f.size() )
++                    {
++                        uint32_t v;
++                        std::memcpy( &v, &f[ at ], 4 );
++                        v += uint32_t( int32_t( rng() % 33 ) - 16 );
++                        std::memcpy( &f[ at ], &v, 4 );
++                    }
++                    break;
++                }
++                case 5: // insert / delete a few bytes
++                {
++                    size_t at = rng() % f.size();
++                    if( rng() % 2 )
++                        f.insert( f.begin() + at, size_t( 1 + rng() % 16 ), uint8_t( rng() ) );
++                    else
++                        f.erase( f.begin() + at, f.begin() + std::min( f.size(), at + 1 + rng() % 16 ) );
++                    break;
++                }
++                case 6: // splice from another seed
++                {
++                    const Bytes &o  = seeds[ rng() % seeds.size() ];
++                    size_t       at = rng() % f.size(), from = rng() % o.size();
++                    size_t       len = std::min( { size_t( 1 + rng() % 64 ), f.size() - at, o.size() - from } );
++                    std::memcpy( &f[ at ], &o[ from ], len );
++                    break;
++                }
++            }
++        }
++
++        Ktx2::Texture t;
++        Ktx2::Result  r = ReadExact( f, &t, lim );
++        results[ Ktx2::ResultToString( r ) ]++;
++        if( r == Ktx2::Result::Success )
++        {
++            std::string why;
++            if( !CheckInvariants( t, &why ) )
++            {
++                failures++;
++                char name[ 64 ];
++                std::snprintf( name, sizeof name, "fuzzfail_%llu.ktx2", (unsigned long long)it );
++                FILE *o = std::fopen( name, "wb" );
++                if( o )
++                {
++                    std::fwrite( f.data(), 1, f.size(), o );
++                    std::fclose( o );
++                }
++                std::printf( "invariant failure '%s' at iteration %llu -> %s\n", why.c_str(),
++                             (unsigned long long)it, name );
++            }
++        }
++        else if( !t.data.empty() || !t.levels.empty() )
++        {
++            failures++;
++            std::printf( "error result left data at iteration %llu\n", (unsigned long long)it );
++        }
++    }
++    double secs = std::chrono::duration< double >( std::chrono::steady_clock::now() - t0 ).count();
++    std::printf( "fuzz: %llu iterations, seed %u, %zu seed files, %.1f s, %llu invariant failures\n",
++                 (unsigned long long)iterations, seed, seeds.size(), secs, (unsigned long long)failures );
++    for( auto &kv : results )
++        std::printf( "  %-55s %llu\n", kv.first.c_str(), (unsigned long long)kv.second );
++    return failures ? 1 : 0;
++}
++
++int main( int argc, char **argv )
++{
++    if( argc >= 2 && std::strcmp( argv[ 1 ], "selftest" ) == 0 )
++    {
++        SelfTest();
++        return g_fail ? 1 : 0;
++    }
++    if( argc == 3 && std::strcmp( argv[ 1 ], "info" ) == 0 )
++        return Info( argv[ 2 ] );
++    if( argc == 4 && std::strcmp( argv[ 1 ], "extract" ) == 0 )
++        return Extract( argv[ 2 ], argv[ 3 ] );
++    if( argc >= 5 && std::strcmp( argv[ 1 ], "fuzz" ) == 0 )
++    {
++        std::vector< Bytes > seeds;
++        for( int i = 4; i < argc; i++ )
++        {
++            Bytes b;
++            if( !ReadWholeFile( argv[ i ], &b ) || b.empty() )
++                return std::fprintf( stderr, "cannot read %s\n", argv[ i ] ), 2;
++            seeds.push_back( std::move( b ) );
++        }
++        // also seed with synthetic zstd files
++        for( Zstd z : { Zstd::RawFrame, Zstd::SkippableThenRaw, Zstd::TwoFrames } )
++        {
++            SynthDesc d;
++            d.zstd = z, d.vkFormat = 145, d.width = 32, d.height = 16, d.layers = 2, d.levelCount = 4;
++            seeds.push_back( MakeKtx2( d ).file );
++        }
++        return Fuzz( std::strtoull( argv[ 2 ], nullptr, 10 ), uint32_t( std::strtoul( argv[ 3 ], nullptr, 10 ) ), seeds );
++    }
++    std::fprintf( stderr, "usage: selftest | info <f> | extract <f> <dir> | fuzz <n> <seed> <files...>\n" );
++    return 2;
++}
+diff --git a/Tests/Ktx2Reader/corpus_compare.py b/Tests/Ktx2Reader/corpus_compare.py
+new file mode 100644
+index 0000000000000000000000000000000000000000..65831df3012c82d99d3759d5e57992c2f6b01203
+--- /dev/null
++++ b/Tests/Ktx2Reader/corpus_compare.py
+@@ -0,0 +1,231 @@
++# SPDX-License-Identifier: GPL-2.0-only
++# Copyright (C) 2026 Handelsonderneming S.D. Broekhoven, trading as ITEagle Europe
++#
++# Black-box comparison of the clean-room KTX2 reader against the official
++# Khronos KTX-Software command line tool (used only as an oracle: it creates
++# the corpus and reports/extracts what it reads; its source is not used).
++#
++# usage: python corpus_compare.py <ktx.exe> <Ktx2ReaderTest.exe> <work-dir> [extra.ktx2 ...]
++#
++# For every file: `ktx validate`, `ktx info --format json` (header + level
++# index) and `ktx extract --all --raw` (image bytes) are compared with
++# `Ktx2ReaderTest info` / `Ktx2ReaderTest extract`.
++
++import json
++import os
++import random
++import re
++import shutil
++import struct
++import subprocess
++import sys
++import zlib
++
++KTX, READER, WORK = sys.argv[1], sys.argv[2], sys.argv[3]
++EXTRA = sys.argv[4:]
++
++# name, format, blockBytes, block w/h, width, height, depth, layers, cubemap, levels, extra args
++CASES = [
++    ("rgba8_64_mips",        "R8G8B8A8_UNORM", 4, 1, 64, 64, 0, 0, False, 7, []),
++    ("rgba8_64_mips_zstd",   "R8G8B8A8_UNORM", 4, 1, 64, 64, 0, 0, False, 7, ["--zstd", "18"]),
++    ("rgba8srgb_odd_13x7",   "R8G8B8A8_SRGB",  4, 1, 13, 7, 0, 0, False, 4, []),
++    ("rgba8_odd_13x7_zstd",  "R8G8B8A8_UNORM", 4, 1, 13, 7, 0, 0, False, 4, ["--zstd", "3"]),
++    ("rgba8_1x1",            "R8G8B8A8_UNORM", 4, 1, 1, 1, 0, 0, False, 1, []),
++    ("rgba8_array5",         "R8G8B8A8_UNORM", 4, 1, 16, 16, 0, 5, False, 5, []),
++    ("rgba8_array5_zstd",    "R8G8B8A8_UNORM", 4, 1, 16, 16, 0, 5, False, 5, ["--zstd", "9"]),
++    ("rgba8_cube",           "R8G8B8A8_UNORM", 4, 1, 16, 16, 0, 0, True, 5, []),
++    ("rgba8_3d_8x8x4",       "R8G8B8A8_UNORM", 4, 1, 8, 8, 4, 0, False, 4, []),
++    ("rgba8_1d_32",          "R8G8B8A8_UNORM", 4, 1, 32, 0, 0, 0, False, 6, ["--1d"]),
++    ("rgb8_odd_5x3",         "R8G8B8_UNORM",   3, 1, 5, 3, 0, 0, False, 3, []),
++    ("r8_odd_7x5",           "R8_UNORM",       1, 1, 7, 5, 0, 0, False, 3, []),
++    ("rgba16f_32",           "R16G16B16A16_SFLOAT", 8, 1, 32, 32, 0, 0, False, 6, []),
++    ("rgba8_runtime_mips",   "R8G8B8A8_UNORM", 4, 1, 32, 32, 0, 0, False, 0, ["--runtime-mipmap"]),
++    ("bc1_64x32",            "BC1_RGB_UNORM_BLOCK", 8, 4, 64, 32, 0, 0, False, 7, []),
++    ("bc1_64x32_zstd",       "BC1_RGB_UNORM_BLOCK", 8, 4, 64, 32, 0, 0, False, 7, ["--zstd", "5"]),
++    ("bc1a_srgb_odd_10x6",   "BC1_RGBA_SRGB_BLOCK", 8, 4, 10, 6, 0, 0, False, 4, []),
++    ("bc3_128",              "BC3_UNORM_BLOCK", 16, 4, 128, 128, 0, 0, False, 8, []),
++    ("bc3_cube_32",          "BC3_SRGB_BLOCK", 16, 4, 32, 32, 0, 0, True, 6, []),
++    ("bc3_cube_32_zstd",     "BC3_UNORM_BLOCK", 16, 4, 32, 32, 0, 0, True, 6, ["--zstd", "10"]),
++    ("bc3_cubearray2_16",    "BC3_UNORM_BLOCK", 16, 4, 16, 16, 0, 2, True, 5, []),
++    ("bc5_array4_32x16",     "BC5_UNORM_BLOCK", 16, 4, 32, 16, 0, 4, False, 6, []),
++    ("bc5_array4_zstd",      "BC5_UNORM_BLOCK", 16, 4, 32, 16, 0, 4, False, 6, ["--zstd", "22"]),
++    ("bc5_snorm_odd_18x9",   "BC5_SNORM_BLOCK", 16, 4, 18, 9, 0, 0, False, 5, []),
++    ("bc7_256",              "BC7_UNORM_BLOCK", 16, 4, 256, 256, 0, 0, False, 9, []),
++    ("bc7_256_zstd",         "BC7_SRGB_BLOCK", 16, 4, 256, 256, 0, 0, False, 9, ["--zstd", "19"]),
++    ("bc7_odd_1000x3",       "BC7_UNORM_BLOCK", 16, 4, 1000, 3, 0, 0, False, 10, []),
++    ("bc7_nomips_2048",      "BC7_UNORM_BLOCK", 16, 4, 2048, 2048, 0, 0, False, 1, ["--zstd", "1"]),
++]
++
++
++def run(args, **kw):
++    return subprocess.run(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, **kw)
++
++
++def level_dim(v, p):
++    return max(1, v >> p)
++
++
++def write_png(path, w, h, rng):
++    raw = b"".join(b"\x00" + bytes(rng.getrandbits(8) for _ in range(w * 4)) for _ in range(h))
++    def chunk(t, d):
++        c = struct.pack(">I", len(d)) + t + d
++        return c + struct.pack(">I", zlib.crc32(t + d) & 0xFFFFFFFF)
++    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0))
++    png += chunk(b"IDAT", zlib.compress(raw, 9)) + chunk(b"IEND", b"")
++    open(path, "wb").write(png)
++
++
++def make_corpus(cdir):
++    rng = random.Random(20261127)
++    made = []
++    for (name, fmt, bb, bwh, w, h, d, layers, cube, levels, extra) in CASES:
++        src = os.path.join(cdir, "src_" + name)
++        os.makedirs(src, exist_ok=True)
++        inputs = []
++        nlev = max(1, levels)
++        nfaces = 6 if cube else 1
++        nlay = max(1, layers)
++        for p in range(nlev):
++            lw, lh, ld = level_dim(w, p), level_dim(max(h, 1), p), level_dim(max(d, 1), p)
++            size = bb * -(-lw // bwh) * (-(-lh // bwh) if h else 1)
++            for _ in range(nlay):
++                for _ in range(nfaces):
++                    for _ in range(ld if d else 1):
++                        fn = os.path.join(src, "in%03d.raw" % len(inputs))
++                        open(fn, "wb").write(bytes(rng.getrandbits(8) for _ in range(size)))
++                        inputs.append(fn)
++        out = os.path.join(cdir, name + ".ktx2")
++        args = [KTX, "create", "--format", fmt, "--raw", "--width", str(w), "--testrun"]
++        if h:
++            args += ["--height", str(h)]
++        else:
++            args += ["--height", "1"]
++        if d:
++            args += ["--depth", str(d)]
++        if layers:
++            args += ["--layers", str(layers)]
++        if cube:
++            args += ["--cubemap"]
++        if levels:
++            args += ["--levels", str(levels)]
++        args += [a for a in extra if a != "--1d"] + (["--1d"] if "--1d" in extra else [])
++        if "--runtime-mipmap" in extra:
++            args = [a for a in args if a != "--levels"]
++        r = run(args + inputs + [out])
++        if r.returncode != 0:
++            print("CREATE FAILED", name, r.stdout.decode(errors="replace").strip())
++            continue
++        made.append(out)
++    # one non-raw file with tool-generated mipmaps from a PNG
++    png = os.path.join(cdir, "src_png.png")
++    write_png(png, 96, 40, rng)
++    out = os.path.join(cdir, "png_genmips_zstd.ktx2")
++    r = run([KTX, "create", "--format", "R8G8B8A8_SRGB", "--generate-mipmap", "--zstd", "12", "--testrun", png, out])
++    if r.returncode == 0:
++        made.append(out)
++    else:
++        print("CREATE FAILED png", r.stdout.decode(errors="replace"))
++    # zlib-supercompressed file: must be rejected as unsupported
++    out = os.path.join(cdir, "unsupported_zlib.ktx2")
++    r = run([KTX, "create", "--format", "R8G8B8A8_UNORM", "--zlib", "6", "--testrun", png, out])
++    if r.returncode == 0:
++        made.append(out)
++    return made
++
++
++KTX_SC = {"KTX_SS_NONE": 0, "KTX_SS_BASIS_LZ": 1, "KTX_SS_ZSTD": 2, "KTX_SS_ZLIB": 3}
++
++
++def compare(path, vk_values):
++    name = os.path.basename(path)
++    problems = []
++    v = run([KTX, "validate", path])
++    official_valid = v.returncode == 0
++    oi = run([KTX, "info", "--format", "json", path])
++    official = json.loads(oi.stdout.decode()) if oi.returncode == 0 else None
++    mi = run([READER, "info", path])
++    mine = json.loads(mi.stdout.decode())
++    sc = KTX_SC.get(official["header"]["supercompressionScheme"]) if official else None
++
++    if not mine["ok"]:
++        expected_reject = sc == 3 or sc == 1
++        return ("REJECT-OK" if expected_reject else "REJECT-UNEXPECTED"), mine["error"], official_valid, 0
++    if not mine["invariants"]:
++        problems.append("invariants")
++
++    h = official["header"]
++    for k in ("typeSize", "pixelWidth", "pixelHeight", "pixelDepth", "layerCount", "faceCount", "levelCount"):
++        if h[k] != mine[k]:
++            problems.append("%s %s!=%s" % (k, h[k], mine[k]))
++    if vk_values.get(h["vkFormat"]) != mine["vkFormat"]:
++        problems.append("vkFormat %s!=%s" % (h["vkFormat"], mine["vkFormat"]))
++    if sc != mine["supercompressionScheme"]:
++        problems.append("scheme")
++    olev = official["index"]["levels"]
++    if len(olev) != len(mine["levels"]):
++        problems.append("level count")
++    for p, (a, b) in enumerate(zip(olev, mine["levels"])):
++        for k in ("byteOffset", "byteLength", "uncompressedByteLength"):
++            if a[k] != b[k]:
++                problems.append("level%d.%s %s!=%s" % (p, k, a[k], b[k]))
++
++    # bytes
++    ex_off = os.path.join(WORK, "x_official", name)
++    ex_me = os.path.join(WORK, "x_mine", name)
++    for dd in (ex_off, ex_me):
++        shutil.rmtree(dd, ignore_errors=True)
++        os.makedirs(dd)
++    r = run([KTX, "extract", "--all", "--raw", path, ex_off])
++    if r.returncode != 0:
++        problems.append("official extract failed: " + r.stdout.decode(errors="replace").strip())
++    r = run([READER, "extract", path, ex_me])
++    if r.returncode != 0:
++        problems.append("reader extract failed")
++    pat = re.compile(r"_level(\d+)|_layer(\d+)|_face(\d+)|_depth(\d+)|_z_slice(\d+)")
++    official_images = {}
++    for fn in os.listdir(ex_off):
++        idx = {"level": 0, "layer": 0, "face": 0, "depth": 0}
++        for m in pat.finditer(fn):
++            for key, val in zip(("level", "layer", "face", "depth", "depth"), m.groups()):
++                if val is not None:
++                    idx[key] = int(val)
++        official_images.setdefault((idx["level"], idx["layer"], idx["face"]), []).append(
++            (idx["depth"], open(os.path.join(ex_off, fn), "rb").read()))
++    compared = 0
++    for fn in os.listdir(ex_me):
++        m = re.match(r"level(\d+)_layer(\d+)_face(\d+)\.raw", fn)
++        key = tuple(int(x) for x in m.groups())
++        mine_bytes = open(os.path.join(ex_me, fn), "rb").read()
++        if key not in official_images:
++            problems.append("no official image for %s" % (key,))
++            continue
++        off_bytes = b"".join(b for _, b in sorted(official_images.pop(key)))
++        if off_bytes != mine_bytes:
++            problems.append("bytes differ %s (%d vs %d)" % (key, len(off_bytes), len(mine_bytes)))
++        compared += 1
++    if official_images:
++        problems.append("official images not produced by reader: %s" % sorted(official_images))
++    status = "MATCH" if not problems else "MISMATCH"
++    return status, "; ".join(problems), official_valid, compared
++
++
++def main():
++    cdir = os.path.join(WORK, "corpus")
++    os.makedirs(cdir, exist_ok=True)
++    files = make_corpus(cdir) + EXTRA
++    # vkFormat name -> value from the reader's own table is not exposed; use ktx info of the reader output
++    hdr = open(os.path.join(os.environ.get("VULKAN_SDK", r"C:\VulkanSDK\1.4.363.0"), "Include", "vulkan", "vulkan_core.h")).read()
++    vk_values = {m.group(1): int(m.group(2)) for m in re.finditer(r"\b(VK_FORMAT_\w+) = (\d+),", hdr)}
++    totals = {}
++    images = 0
++    for f in files:
++        status, msg, valid, n = compare(f, vk_values)
++        images += n
++        totals[status] = totals.get(status, 0) + 1
++        print("%-18s validate=%-5s images=%-4d %s %s" % (status, valid, n, os.path.basename(f), msg))
++    print("SUMMARY files=%d images=%d %s" % (len(files), images, totals))
++    return 0 if set(totals) <= {"MATCH", "REJECT-OK"} else 1
++
++
++if __name__ == "__main__":
++    sys.exit(main())
