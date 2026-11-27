@@ -1,0 +1,27 @@
+{
+  "schema_version": "0.1",
+  "upstreams": [
+    {
+      "name": "classic-vk",
+      "role": "primary",
+      "repository": "https://github.com/tx00100xt/SeriousSamClassic-VK",
+      "commit": "510d36f901cbe883c56b155b53717e4efdeb6522",
+      "branch_hint": "main",
+      "license": "GPL-2.0-only",
+      "swhid": "swh:1:rev:510d36f901cbe883c56b155b53717e4efdeb6522",
+      "patch_series": "patches/classic-vk",
+      "audit": "SSTRE docs/experiments/EXP-004-upstream-publication-audit.md"
+    },
+    {
+      "name": "serious-engine-rt",
+      "role": "secondary",
+      "repository": "https://github.com/sultim-t/Serious-Engine-RT",
+      "commit": "0e7f223c19a28014b60d900878c28831db522120",
+      "branch_hint": "main",
+      "license": "GPL-2.0-only",
+      "swhid": "swh:1:rev:0e7f223c19a28014b60d900878c28831db522120",
+      "patch_series": "patches/serious-engine-rt",
+      "audit": "SSTRE docs/experiments/EXP-004-upstream-publication-audit.md"
+    }
+  ]
+}

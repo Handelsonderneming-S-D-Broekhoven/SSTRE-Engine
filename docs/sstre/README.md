@@ -7,18 +7,9 @@ purposes.
 
 ## Status (2026-11-27)
 
-- **No engine source has been imported.** The repository contains a single
-  "Initial commit" with a README (`main` @ `d17edbb`). It is not a GitHub fork
-  and has no upstream history.
-- **The base engine is not chosen.** The decision is ADR-005 (engine
-  foundation, *proposed*) in the SSTRE umbrella, informed by
-  `docs/research/RD-001-engine-baseline.md`. Candidates under evaluation:
-  - https://github.com/sultim-t/Serious-Engine-RT (primary candidate, ray tracing)
-  - https://github.com/tx00100xt/SeriousSamClassic-VK (alternative foundation)
-  - references: https://github.com/Croteam-official/Serious-Engine,
-    https://github.com/sultim-t/Serious-Engine-Vk,
-    https://github.com/sultim-t/RayTracedGL1
-- Nothing builds or runs from this repository yet.
+- **Distribution model: own patches against pinned upstream commits** (SSTRE ADR-0008, accepted provisionally by the owner on 2026-11-27). The pins are in [`../../upstream.lock.json`](../../upstream.lock.json). No upstream history or files are published here.
+- **Engine direction:** SeriousSamClassic-VK is the primary baseline and Serious-Engine-RT the secondary upstream (SSTRE ADR-0005, provisional). The final selection depends on the Phase 1 build and rendering results.
+- **Local development** happens on local branches based on the imported upstream histories. A local pre-push hook prevents publishing them.
 
 ## Role of this repository
 
@@ -33,13 +24,12 @@ or any live inference service. Interfaces: SSTRE
 
 ## Licensing
 
-Upstream engine code keeps its own license, copyright headers and notices, verbatim. SSTRE never relicenses engine code. The engine is **`GPL-2.0-only`** (all candidate upstreams; audited in SSTRE `docs/research/RD-007-licensing.md`), and SSTRE modifications to it are contributed under the same `GPL-2.0-only` terms, with the notice `Copyright © 2026 Handelsonderneming S.D. Broekhoven, trading as ITEagle Europe` added for our own changes only. Existing third-party copyright notices are preserved unchanged. No SSTRE license file is added before the upstream import, because the imported upstream `LICENSE` applies.
+Upstream engine code keeps its own license, copyright headers and notices, verbatim. SSTRE never relicenses engine code. The engine is **`GPL-2.0-only`** (all candidate upstreams; audited in SSTRE `docs/research/RD-007-licensing.md`), and SSTRE modifications to it are contributed under the same `GPL-2.0-only` terms, with the notice `Copyright © 2026 Handelsonderneming S.D. Broekhoven, trading as ITEagle Europe` added for our own changes only. Existing third-party copyright notices are preserved unchanged. Because no upstream code is stored in this repository (ADR-0008), it carries its own `GPL-2.0-only` [`LICENSE`](../../LICENSE) for SSTRE's patches and files.
 
 
-## Importing upstream
+## Upstream and patches
 
-See [upstream-import-procedure.md](./upstream-import-procedure.md). The import
-requires ADR-005 to be accepted and explicit owner approval.
+See [upstream-import-procedure.md](./upstream-import-procedure.md). Its history-import options are **superseded for publication** by ADR-0008. They remain valid only for building local development branches.
 
 ## Planned contents of this directory (after import)
 

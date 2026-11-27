@@ -1,0 +1,64 @@
+name: sstre-checks
+
+# Real checks only (Phase 1, backlog POC-05). SSTRE-Engine variant:
+#  - validate: Markdown relative links and the forbidden-file scan, using the
+#    umbrella's scripts/validate_repo.py fetched at a PINNED umbrella commit.
+# No REUSE job: the preserved upstream engine import (GPL-2.0-only, upstream
+# headers kept as-is) is not REUSE-compliant and must not be rewritten.
+# No build, no game data, no GPU, no secrets.
+#
+# Upstream history contains a few upstream-distributed archives, demos and
+# large binaries. They are exempted by path in
+# .github/workflows/sstre-forbidden-allowlist.txt, which needs validator support for
+# --forbidden-allowlist (added in the umbrella after 230ab5e). FOLLOW-UP when
+# that umbrella commit is pushed: bump SSTRE_UMBRELLA_COMMIT to it and set
+# SSTRE_VALIDATOR_ARGS to "--forbidden-allowlist .github/workflows/sstre-forbidden-allowlist.txt".
+# Until then the scan runs without the allowlist, which is correct for this
+# branch (it contains no upstream files yet) but would fail after an upstream merge.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SSTRE_UMBRELLA_COMMIT: 2ffcf1c9ad16a93b9269f9a4484477f313e08774
+  SSTRE_VALIDATOR_ARGS: "--forbidden-allowlist .github/workflows/sstre-forbidden-allowlist.txt"
+
+jobs:
+  validate:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+          persist-credentials: false
+
+      - name: Check out umbrella validator (pinned commit)
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: Handelsonderneming-S-D-Broekhoven/SSTRE
+          ref: ${{ env.SSTRE_UMBRELLA_COMMIT }}
+          path: umbrella
+          sparse-checkout: scripts
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.12"
+
+      - name: Validate repository (links + forbidden files; no schemas here)
+        # SSTRE_VALIDATOR_ARGS is a fixed value from this file, not user input;
+        # it is intentionally word-split.
+        run: python umbrella/scripts/validate_repo.py --root repo --skip-schemas $SSTRE_VALIDATOR_ARGS
