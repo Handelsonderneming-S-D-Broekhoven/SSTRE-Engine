@@ -1,0 +1,900 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Sat, 28 Nov 2026 13:42:38 +0100
+Subject: [PATCH] rt(tse,tfe): batch brush polygons per entity; respect RTGL1
+ static capacity
+
+TSE 1_2_Palenque in RT logged "Can't find static geometry with unique ID"
+/ RG_CANT_UPDATE_TRANSFORM (SceneBrushes.cpp) and then exited or hung.
+
+Cause: brush polygons were batched only while consecutive polygons of one
+sector shared the same material state, so the level produced 5127 static
+brush geometries (avg ~10 vertices each). RTGL1 has a fixed capacity of
+4096 bottom-level geometries in total (static + dynamic per frame); its
+VertexCollector::AddGeometry silently rejects anything beyond it and
+rgUploadGeometry still returns RG_SUCCESS. Every movable brush part
+registered after slot 4096 therefore had no RTGL1 geometry, and the
+transform updates failed. Static world geometry beyond the cap was
+missing as well, and no slots were left for dynamic geometry.
+
+Fix (root cause): collect the polygons of all active sectors of a brush
+entity and group them by the existing batching key (textures, blending,
+flags, mask, mirror/warp, media), keeping the polygon order inside a
+group. The grouping is deterministic, so the brushPartIndex sequence is
+identical in the upload, tex-coord and rasterized passes.
+1_2_Palenque: 5127 -> 1405 geometries, same index count.
+
+Mitigation (in addition): SceneBrushes tracks RTGL1's static budget
+(geometries with 1024 slots reserved for dynamic geometry, vertices,
+indices), does not upload parts that would be dropped, never records
+movable IDs or tex-coord parts for parts that were not uploaded, and
+prints one console line if parts were dropped.
+
+Same code in the TFE tree (files were identical).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../Sources/Engine/Raytracing/RTBrushes.cpp   | 198 ++++++++++++++----
+ SamTFE/Sources/Engine/Raytracing/Scene.cpp    |   2 +
+ .../Engine/Raytracing/SceneBrushes.cpp        |  59 +++++-
+ .../Sources/Engine/Raytracing/SceneBrushes.h  |  11 +
+ .../Sources/Engine/Raytracing/RTBrushes.cpp   | 198 ++++++++++++++----
+ SamTSE/Sources/Engine/Raytracing/Scene.cpp    |   2 +
+ .../Engine/Raytracing/SceneBrushes.cpp        |  59 +++++-
+ .../Sources/Engine/Raytracing/SceneBrushes.h  |  11 +
+ 8 files changed, 448 insertions(+), 92 deletions(-)
+
+diff --git a/SamTFE/Sources/Engine/Raytracing/RTBrushes.cpp b/SamTFE/Sources/Engine/Raytracing/RTBrushes.cpp
+index e88f38ac845cf2b71d25b757c75bc15eeaf8bad5..369781e5691dea86d31623d9942d011f6a2612ec 100644
+--- a/SamTFE/Sources/Engine/Raytracing/RTBrushes.cpp
++++ b/SamTFE/Sources/Engine/Raytracing/RTBrushes.cpp
+@@ -32,6 +32,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #include <Engine/Base/ListIterator.inl>
+ 
+ 
++#include <algorithm>
++#include <vector>
++
+ #include "RTProcessing.h"
+ #include "SSRTGlobals.h"
+ 
+@@ -577,39 +580,82 @@ static void RT_ProcessIndices(CBrushPolygon &polygon, uint32_t firstVertexId)
+ }
+ 
+ 
+-static void RT_AddActiveSector(CBrushSector &bscSector, CEntity *penBrush, bool onlyTexCoords, bool onlyRasterized, SSRT::Scene *pScene)
++// SSTRE: polygon batching state, computed once per polygon.
++// RTGL1 has a hard cap of MAX_BOTTOM_LEVEL_GEOMETRIES_COUNT (4096) geometries in total
++// and silently drops every upload beyond it (rgUploadGeometry still returns RG_SUCCESS).
++// Batching only consecutive polygons of one sector produced >5000 tiny geometries on large
++// levels (e.g. TSE 1_2_Palenque), so movable brushes uploaded after the cap could not be
++// transformed (RG_CANT_UPDATE_TRANSFORM) and static geometry went missing.
++// Polygons of all sectors of a brush entity are now grouped by their batching key, so each
++// brush entity produces one geometry per distinct key. The grouping is deterministic, so
++// the brushPartIndex sequence stays identical between the upload pass and the
++// tex-coords / rasterized update passes.
++struct RT_PolygonBatchEntry
+ {
+-  ASSERT(RT_AllSectorVertices.Count() == 0 || RT_AllSectorIndices.Count() == 0);
++  CBrushPolygon *polygon;
++  uint64_t textureKeys[MAX_BRUSH_TEXTURE_COUNT];
++  RT_TextureLayerBlending blending;
++  uint32_t polygonFlags;
++  RgGeometryPrimaryVisibilityType maskBit;
++  bool hasScrollingTextures;
++  bool isMirror;
++  bool isWarpPortal;
++  bool noMediaChange;
++  uint32_t order;
++};
+ 
+ 
+-  CBrush3D *brush = bscSector.bsc_pbmBrushMip->bm_pbrBrush;
+-  if (brush->br_pfsFieldSettings != NULL)
++// same equality semantics as RT_AreTexturesSame
++static uint64_t RT_GetTextureBatchKey(CBrushPolygonTexture &t)
++{
++  CTextureData *td = (CTextureData *)t.bpt_toTexture.GetData();
++
++  if (td == nullptr)
+   {
+-    return;
++    return 0;
+   }
+ 
++  if (td->td_ulObject != 0)
++  {
++    return (1ull << 32) | (uint64_t)td->td_ulObject;
++  }
+ 
+-  // keep last rendered info, to batch geometry
+-  BrushFlushInfo lastInfo = BrushFlushInfo();
++  return (1ull << 63) | (uint64_t)(uintptr_t)td;
++}
+ 
+ 
+-  auto flushLastSavedInfo = [&] ()
++static bool RT_PolygonBatchLess(const RT_PolygonBatchEntry &a, const RT_PolygonBatchEntry &b)
++{
++  for (uint32_t i = 0; i < MAX_BRUSH_TEXTURE_COUNT; i++)
+   {
+-    if (!onlyTexCoords)
+-    {
+-      RT_FlushBrushInfo(penBrush, RT_BrushPartIndex, lastInfo, onlyRasterized, pScene);
+-    }
+-    // update tex coords only for scrolling textures
+-    else if (lastInfo.hasScrollingTextures)
+-    {
+-      RT_UpdateBrushTexCoords(penBrush, RT_BrushPartIndex, pScene);
+-    }
++    if (a.textureKeys[i] != b.textureKeys[i]) { return a.textureKeys[i] < b.textureKeys[i]; }
++  }
+ 
+-    RT_BrushClear();
++  for (uint32_t i = 0; i < MAX_BRUSH_TEXTURE_COUNT; i++)
++  {
++    if (a.blending.layerBlendingType[i] != b.blending.layerBlendingType[i]) { return a.blending.layerBlendingType[i] < b.blending.layerBlendingType[i]; }
++    if (a.blending.layerColor[i] != b.blending.layerColor[i]) { return a.blending.layerColor[i] < b.blending.layerColor[i]; }
++  }
+ 
+-    // TODO: use polygon ID as a base index and flush ID as additional
+-    RT_BrushPartIndex++;
+-  };
++  if (a.polygonFlags != b.polygonFlags) { return a.polygonFlags < b.polygonFlags; }
++  if (a.maskBit != b.maskBit) { return a.maskBit < b.maskBit; }
++  if (a.hasScrollingTextures != b.hasScrollingTextures) { return a.hasScrollingTextures < b.hasScrollingTextures; }
++  if (a.isMirror != b.isMirror) { return a.isMirror < b.isMirror; }
++  if (a.isWarpPortal != b.isWarpPortal) { return a.isWarpPortal < b.isWarpPortal; }
++  if (a.noMediaChange != b.noMediaChange) { return a.noMediaChange < b.noMediaChange; }
++
++  // keep the original polygon order inside a batch
++  return a.order < b.order;
++}
++
++
++static void RT_CollectSectorPolygons(CBrushSector &bscSector, CEntity *penBrush, SSRT::Scene *pScene, std::vector<RT_PolygonBatchEntry> &entries)
++{
++  CBrush3D *brush = bscSector.bsc_pbmBrushMip->bm_pbrBrush;
++  if (brush->br_pfsFieldSettings != NULL)
++  {
++    return;
++  }
+ 
+ 
+   FOREACHINSTATICARRAY(bscSector.bsc_abpoPolygons, CBrushPolygon, itpo)
+@@ -694,7 +740,7 @@ static void RT_AddActiveSector(CBrushSector &bscSector, CEntity *penBrush, bool
+       {
+         CBrushPolygonTexture &layerTexture = polygon.bpo_abptTextures[i];
+         CTextureBlending &tb = pScene->GetWorld()->wo_atbTextureBlendings[layerTexture.s.bpt_ubBlend];
+-        
++
+         COLOR colorLayer = layerTexture.s.bpt_colColor;
+ 
+         const float fOpacity = brush->br_penEntity->GetOpacity();
+@@ -705,7 +751,7 @@ static void RT_AddActiveSector(CBrushSector &bscSector, CEntity *penBrush, bool
+           const SLONG slOpacity = NormFloatToByte(fOpacity);
+           UBYTE &layerBlending = tb.tb_ubBlendingType;
+ 
+-          // if texture is opaque 
++          // if texture is opaque
+           if ((layerBlending & STXF_BLEND_MASK) == 0)
+           {
+             // set it to blend with opaque alpha
+@@ -732,13 +778,74 @@ static void RT_AddActiveSector(CBrushSector &bscSector, CEntity *penBrush, bool
+       }
+     }
+ 
+-    bool hasScrollingTextures = RT_HasScrollingTextures(polygon);
+-
+     // commented to have brushPartIndex consistent with the previous uploads
+     /*if (onlyTexCoords && !hasScrollingTextures)
+     {
+       continue;
+     }*/
++  #pragma endregion
++
++
++    RT_PolygonBatchEntry e = {};
++    e.polygon = &polygon;
++    for (uint32_t i = 0; i < MAX_BRUSH_TEXTURE_COUNT; i++)
++    {
++      e.textureKeys[i] = RT_GetTextureBatchKey(polygon.bpo_abptTextures[i]);
++    }
++    e.blending = curBlending;
++    e.polygonFlags = polygonFlags;
++    e.maskBit = pScene->GetCustomInfo()->GetBrushMaskBit(&polygon);
++    e.hasScrollingTextures = RT_HasScrollingTextures(polygon);
++    e.isMirror = isMirror;
++    e.isWarpPortal = isWarpPortal;
++    e.noMediaChange = pScene->GetCustomInfo()->DoesPolygonPreserveTheSameMedia(&polygon);
++    e.order = (uint32_t)entries.size();
++
++    entries.push_back(e);
++  }
++}
++
++
++static void RT_AddBatchedPolygons(std::vector<RT_PolygonBatchEntry> &entries, CEntity *penBrush, bool onlyTexCoords, bool onlyRasterized, SSRT::Scene *pScene)
++{
++  ASSERT(RT_AllSectorVertices.Count() == 0 || RT_AllSectorIndices.Count() == 0);
++
++  if (entries.empty())
++  {
++    return;
++  }
++
++  std::sort(entries.begin(), entries.end(), RT_PolygonBatchLess);
++
++
++  // keep last rendered info, to batch geometry
++  BrushFlushInfo lastInfo = BrushFlushInfo();
++
++
++  auto flushLastSavedInfo = [&] ()
++  {
++    if (!onlyTexCoords)
++    {
++      RT_FlushBrushInfo(penBrush, RT_BrushPartIndex, lastInfo, onlyRasterized, pScene);
++    }
++    // update tex coords only for scrolling textures
++    else if (lastInfo.hasScrollingTextures)
++    {
++      RT_UpdateBrushTexCoords(penBrush, RT_BrushPartIndex, pScene);
++    }
++
++    RT_BrushClear();
++
++    // TODO: use polygon ID as a base index and flush ID as additional
++    RT_BrushPartIndex++;
++  };
++
++
++  for (const RT_PolygonBatchEntry &e : entries)
++  {
++    CBrushPolygon &polygon = *e.polygon;
++
++    const bool hasScrollingTextures = e.hasScrollingTextures;
+ 
+     bool isWaterPolygon = false;
+     bool isWaterTexture[MAX_BRUSH_TEXTURE_COUNT] = {};
+@@ -748,23 +855,17 @@ static void RT_AddActiveSector(CBrushSector &bscSector, CEntity *penBrush, bool
+       isWaterPolygon = RT_HasWaterTextures(polygon, isWaterTexture, pScene);
+     }
+ 
+-    RgGeometryPrimaryVisibilityType maskBit = pScene->GetCustomInfo()->GetBrushMaskBit(&polygon);
+-  #pragma endregion
+-
+-
+-    bool noMediaChange = pScene->GetCustomInfo()->DoesPolygonPreserveTheSameMedia(&polygon);
+-
+ 
+     // if settings are different
+     bool mustBeFlushed =
+       !RT_AreTexturesSame(lastInfo.textures, polygon.bpo_abptTextures) ||
+-      !RT_AreBlendingsSame(lastInfo.blending, curBlending) ||
+-      lastInfo.polygonFlags != polygonFlags ||
++      !RT_AreBlendingsSame(lastInfo.blending, e.blending) ||
++      lastInfo.polygonFlags != e.polygonFlags ||
+       lastInfo.hasScrollingTextures != hasScrollingTextures ||
+-      lastInfo.maskBit != maskBit ||
+-      lastInfo.isMirror != isMirror ||
+-      lastInfo.isWarpPortal != isWarpPortal ||
+-      lastInfo.noMediaChangeOnRefraction != noMediaChange;
++      lastInfo.maskBit != e.maskBit ||
++      lastInfo.isMirror != e.isMirror ||
++      lastInfo.isWarpPortal != e.isWarpPortal ||
++      lastInfo.noMediaChangeOnRefraction != e.noMediaChange;
+ 
+     if (mustBeFlushed)
+     {
+@@ -793,14 +894,14 @@ static void RT_AddActiveSector(CBrushSector &bscSector, CEntity *penBrush, bool
+ 
+ 
+     // rewrite last info
+-    lastInfo.polygonFlags = polygonFlags;
+-    lastInfo.blending = curBlending;
++    lastInfo.polygonFlags = e.polygonFlags;
++    lastInfo.blending = e.blending;
+     lastInfo.hasScrollingTextures = hasScrollingTextures;
+     lastInfo.isWater = isWaterPolygon;
+-    lastInfo.maskBit = maskBit;
+-    lastInfo.isMirror = isMirror;
+-    lastInfo.isWarpPortal = isWarpPortal;
+-    lastInfo.noMediaChangeOnRefraction = noMediaChange;
++    lastInfo.maskBit = e.maskBit;
++    lastInfo.isMirror = e.isMirror;
++    lastInfo.isWarpPortal = e.isWarpPortal;
++    lastInfo.noMediaChangeOnRefraction = e.noMediaChange;
+     for (uint32_t i = 0; i < MAX_BRUSH_TEXTURE_COUNT; i++)
+     {
+       lastInfo.textures[i] = &polygon.bpo_abptTextures[i];
+@@ -854,6 +955,10 @@ static void RT_ProcessBrushEntity(CEntity *penBrush, bool onlyTexCoords, bool on
+   // if brush mip exists for that mip factor
+   if (pbm != NULL)
+   {
++    // reused between calls to avoid per-frame allocations
++    static std::vector<RT_PolygonBatchEntry> entries;
++    entries.clear();
++
+     // for each sector
+     FOREACHINDYNAMICARRAY(pbm->bm_abscSectors, CBrushSector, itbsc)
+     {
+@@ -861,10 +966,13 @@ static void RT_ProcessBrushEntity(CEntity *penBrush, bool onlyTexCoords, bool on
+       if (!(itbsc->bsc_ulFlags & BSCF_HIDDEN) &&
+           !pScene->GetCustomInfo()->IsBrushSectorIgnored(itbsc))
+       {
+-        // add that sector to active sectors
+-        RT_AddActiveSector(itbsc.Current(), penBrush, onlyTexCoords, onlyRasterized, pScene);
++        // collect polygons of that sector
++        RT_CollectSectorPolygons(itbsc.Current(), penBrush, pScene, entries);
+       }
+     }
++
++    // batch polygons of all active sectors by their material state
++    RT_AddBatchedPolygons(entries, penBrush, onlyTexCoords, onlyRasterized, pScene);
+   }
+ }
+ 
+diff --git a/SamTFE/Sources/Engine/Raytracing/Scene.cpp b/SamTFE/Sources/Engine/Raytracing/Scene.cpp
+index 6777a2c06a590487334bf83ebb156538f6186a7d..8fd0af47983ccd95e8d1bb7545f9db5330b5a2bf 100644
+--- a/SamTFE/Sources/Engine/Raytracing/Scene.cpp
++++ b/SamTFE/Sources/Engine/Raytracing/Scene.cpp
+@@ -501,6 +501,8 @@ void SSRT::Scene::ProcessBrushes()
+   r = rgSubmitStaticGeometries(instance);
+   RG_CHECKERROR(r);
+ 
++  pSceneBrushes->OnStaticGeometrySubmitted();
++
+ #ifndef NDEBUG
+   CPrintF("SSRT scene's brushes were uploaded.\n");
+ #endif // !NDEBUG
+diff --git a/SamTFE/Sources/Engine/Raytracing/SceneBrushes.cpp b/SamTFE/Sources/Engine/Raytracing/SceneBrushes.cpp
+index 462d00c2d36dd7de118009a13c68da668ffed6c6..09300515519c047f9cd18ea3a523440e561d383f 100644
+--- a/SamTFE/Sources/Engine/Raytracing/SceneBrushes.cpp
++++ b/SamTFE/Sources/Engine/Raytracing/SceneBrushes.cpp
+@@ -30,9 +30,24 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ 
+ extern SSRT::SSRTGlobals _srtGlobals;
+ 
++// SSTRE: RTGL1 static capacity (RTGL1 Generated/ShaderCommonC.h, VertexCollector::AddGeometry).
++// Static and dynamic geometries share MAX_BOTTOM_LEVEL_GEOMETRIES_COUNT (4096) slots, so a part
++// of it is reserved for the dynamic geometry (models, particles) of each frame.
++// RTGL1 drops geometry beyond these limits without returning an error.
++static constexpr uint32_t SSRT_RTGL1_MAX_GEOMETRIES          = 4096;
++static constexpr uint32_t SSRT_RTGL1_RESERVED_DYNAMIC_GEOMS  = 1024;
++static constexpr uint32_t SSRT_RTGL1_MAX_STATIC_VERTICES     = 1048576;
++static constexpr uint32_t SSRT_RTGL1_MAX_STATIC_INDICES      = 1048576 * 3;
++
++static uint32_t AlignUpBy3(uint32_t x)
++{
++  return ((x + 2) / 3) * 3;
++}
++
+ 
+ SSRT::SceneBrushes::SceneBrushes(RgInstance _instance, CWorld *_pWorld, TextureUploader *_pTextureUploader)
+-  : instance(_instance), pTextureUploader(_pTextureUploader), bRefreshMovableStates(false)
++  : instance(_instance), pTextureUploader(_pTextureUploader), bRefreshMovableStates(false),
++    staticGeometryCount(0), staticVertexCount(0), staticIndexCount(0), staticDroppedCount(0)
+ {
+ }
+ 
+@@ -54,6 +69,36 @@ static void GetBlendingFromMaterialBlending(
+   }
+ }
+ 
++bool SSRT::SceneBrushes::FitsIntoStaticBudget(const CBrushGeometry &brush)
++{
++  // same accounting as RTGL1's VertexCollector::AddGeometry
++  const uint32_t newGeomCount   = staticGeometryCount + 1;
++  const uint32_t newVertexCount = AlignUpBy3(staticVertexCount) + brush.vertexCount;
++  const uint32_t newIndexCount  = AlignUpBy3(staticIndexCount) + brush.indexCount;
++
++  if (newGeomCount   >= SSRT_RTGL1_MAX_GEOMETRIES - SSRT_RTGL1_RESERVED_DYNAMIC_GEOMS ||
++      newVertexCount >= SSRT_RTGL1_MAX_STATIC_VERTICES ||
++      newIndexCount  >= SSRT_RTGL1_MAX_STATIC_INDICES)
++  {
++    staticDroppedCount++;
++    return false;
++  }
++
++  staticGeometryCount = newGeomCount;
++  staticVertexCount = newVertexCount;
++  staticIndexCount = newIndexCount;
++  return true;
++}
++
++void SSRT::SceneBrushes::OnStaticGeometrySubmitted()
++{
++  if (staticDroppedCount > 0)
++  {
++    CPrintF("RT: %u brush parts exceed the RTGL1 static geometry budget and are not ray traced (%u parts, %u vertices, %u indices uploaded).\n",
++            staticDroppedCount, staticGeometryCount, staticVertexCount, staticIndexCount);
++  }
++}
++
+ void SSRT::SceneBrushes::RegisterBrush(const CBrushGeometry &brush)
+ {
+   if (brush.vertices == nullptr || brush.vertexCount == 0 || brush.indices == nullptr || brush.indexCount == 0)
+@@ -65,6 +110,12 @@ void SSRT::SceneBrushes::RegisterBrush(const CBrushGeometry &brush)
+   {
+     ASSERT(!brush.isSky);
+ 
++    // RTGL1 would silently ignore it; don't register it, so it's never referenced later
++    if (!FitsIntoStaticBudget(brush))
++    {
++      return;
++    }
++
+     RgGeometryUploadInfo stInfo = {};
+     stInfo.uniqueID = brush.GetUniqueID();
+     stInfo.geomType = brush.isMovable ?
+@@ -107,6 +158,12 @@ void SSRT::SceneBrushes::RegisterBrush(const CBrushGeometry &brush)
+ 
+     RgResult r = rgUploadGeometry(instance, &stInfo);
+     RG_CHECKERROR(r);
++
++    // don't register parts that weren't uploaded
++    if (r != RG_SUCCESS)
++    {
++      return;
++    }
+   }
+   else
+   {
+diff --git a/SamTFE/Sources/Engine/Raytracing/SceneBrushes.h b/SamTFE/Sources/Engine/Raytracing/SceneBrushes.h
+index 2880e515395086588c0541ac946da7021637bcc4..e6a935e8ef163cf0671c4572b90a6846930644db 100644
+--- a/SamTFE/Sources/Engine/Raytracing/SceneBrushes.h
++++ b/SamTFE/Sources/Engine/Raytracing/SceneBrushes.h
+@@ -47,7 +47,11 @@ public:
+ 
+   void ResetOnGameStop();
+ 
++  // Report geometry that did not fit into the RTGL1 static budget
++  void OnStaticGeometrySubmitted();
++
+ private:
++  bool FitsIntoStaticBudget(const CBrushGeometry &brush);
+   void RegisterBrushTextures(const CBrushGeometry &brush);
+ 
+   void UpdateMovableBrush(CEntity *pBrushEntity);
+@@ -82,6 +86,13 @@ private:
+   std::map<ULONG, MovableState>           entityToMovableBrushPlacement;
+   bool                                    bRefreshMovableStates;
+ 
++  // SSTRE: RTGL1 silently drops static geometry beyond its fixed capacity
++  // (rgUploadGeometry still returns RG_SUCCESS), so the budget is tracked here
++  uint32_t                                staticGeometryCount;
++  uint32_t                                staticVertexCount;
++  uint32_t                                staticIndexCount;
++  uint32_t                                staticDroppedCount;
++
+   // True, if entity with that ID (key) has effect or aniamated texture.
+   // Used for updating it every frame, as brushes are processed only once.
+   std::set<ULONG>                         entityHasNonStaticTexture;
+diff --git a/SamTSE/Sources/Engine/Raytracing/RTBrushes.cpp b/SamTSE/Sources/Engine/Raytracing/RTBrushes.cpp
+index e88f38ac845cf2b71d25b757c75bc15eeaf8bad5..369781e5691dea86d31623d9942d011f6a2612ec 100644
+--- a/SamTSE/Sources/Engine/Raytracing/RTBrushes.cpp
++++ b/SamTSE/Sources/Engine/Raytracing/RTBrushes.cpp
+@@ -32,6 +32,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #include <Engine/Base/ListIterator.inl>
+ 
+ 
++#include <algorithm>
++#include <vector>
++
+ #include "RTProcessing.h"
+ #include "SSRTGlobals.h"
+ 
+@@ -577,39 +580,82 @@ static void RT_ProcessIndices(CBrushPolygon &polygon, uint32_t firstVertexId)
+ }
+ 
+ 
+-static void RT_AddActiveSector(CBrushSector &bscSector, CEntity *penBrush, bool onlyTexCoords, bool onlyRasterized, SSRT::Scene *pScene)
++// SSTRE: polygon batching state, computed once per polygon.
++// RTGL1 has a hard cap of MAX_BOTTOM_LEVEL_GEOMETRIES_COUNT (4096) geometries in total
++// and silently drops every upload beyond it (rgUploadGeometry still returns RG_SUCCESS).
++// Batching only consecutive polygons of one sector produced >5000 tiny geometries on large
++// levels (e.g. TSE 1_2_Palenque), so movable brushes uploaded after the cap could not be
++// transformed (RG_CANT_UPDATE_TRANSFORM) and static geometry went missing.
++// Polygons of all sectors of a brush entity are now grouped by their batching key, so each
++// brush entity produces one geometry per distinct key. The grouping is deterministic, so
++// the brushPartIndex sequence stays identical between the upload pass and the
++// tex-coords / rasterized update passes.
++struct RT_PolygonBatchEntry
+ {
+-  ASSERT(RT_AllSectorVertices.Count() == 0 || RT_AllSectorIndices.Count() == 0);
++  CBrushPolygon *polygon;
++  uint64_t textureKeys[MAX_BRUSH_TEXTURE_COUNT];
++  RT_TextureLayerBlending blending;
++  uint32_t polygonFlags;
++  RgGeometryPrimaryVisibilityType maskBit;
++  bool hasScrollingTextures;
++  bool isMirror;
++  bool isWarpPortal;
++  bool noMediaChange;
++  uint32_t order;
++};
+ 
+ 
+-  CBrush3D *brush = bscSector.bsc_pbmBrushMip->bm_pbrBrush;
+-  if (brush->br_pfsFieldSettings != NULL)
++// same equality semantics as RT_AreTexturesSame
++static uint64_t RT_GetTextureBatchKey(CBrushPolygonTexture &t)
++{
++  CTextureData *td = (CTextureData *)t.bpt_toTexture.GetData();
++
++  if (td == nullptr)
+   {
+-    return;
++    return 0;
+   }
+ 
++  if (td->td_ulObject != 0)
++  {
++    return (1ull << 32) | (uint64_t)td->td_ulObject;
++  }
+ 
+-  // keep last rendered info, to batch geometry
+-  BrushFlushInfo lastInfo = BrushFlushInfo();
++  return (1ull << 63) | (uint64_t)(uintptr_t)td;
++}
+ 
+ 
+-  auto flushLastSavedInfo = [&] ()
++static bool RT_PolygonBatchLess(const RT_PolygonBatchEntry &a, const RT_PolygonBatchEntry &b)
++{
++  for (uint32_t i = 0; i < MAX_BRUSH_TEXTURE_COUNT; i++)
+   {
+-    if (!onlyTexCoords)
+-    {
+-      RT_FlushBrushInfo(penBrush, RT_BrushPartIndex, lastInfo, onlyRasterized, pScene);
+-    }
+-    // update tex coords only for scrolling textures
+-    else if (lastInfo.hasScrollingTextures)
+-    {
+-      RT_UpdateBrushTexCoords(penBrush, RT_BrushPartIndex, pScene);
+-    }
++    if (a.textureKeys[i] != b.textureKeys[i]) { return a.textureKeys[i] < b.textureKeys[i]; }
++  }
+ 
+-    RT_BrushClear();
++  for (uint32_t i = 0; i < MAX_BRUSH_TEXTURE_COUNT; i++)
++  {
++    if (a.blending.layerBlendingType[i] != b.blending.layerBlendingType[i]) { return a.blending.layerBlendingType[i] < b.blending.layerBlendingType[i]; }
++    if (a.blending.layerColor[i] != b.blending.layerColor[i]) { return a.blending.layerColor[i] < b.blending.layerColor[i]; }
++  }
+ 
+-    // TODO: use polygon ID as a base index and flush ID as additional
+-    RT_BrushPartIndex++;
+-  };
++  if (a.polygonFlags != b.polygonFlags) { return a.polygonFlags < b.polygonFlags; }
++  if (a.maskBit != b.maskBit) { return a.maskBit < b.maskBit; }
++  if (a.hasScrollingTextures != b.hasScrollingTextures) { return a.hasScrollingTextures < b.hasScrollingTextures; }
++  if (a.isMirror != b.isMirror) { return a.isMirror < b.isMirror; }
++  if (a.isWarpPortal != b.isWarpPortal) { return a.isWarpPortal < b.isWarpPortal; }
++  if (a.noMediaChange != b.noMediaChange) { return a.noMediaChange < b.noMediaChange; }
++
++  // keep the original polygon order inside a batch
++  return a.order < b.order;
++}
++
++
++static void RT_CollectSectorPolygons(CBrushSector &bscSector, CEntity *penBrush, SSRT::Scene *pScene, std::vector<RT_PolygonBatchEntry> &entries)
++{
++  CBrush3D *brush = bscSector.bsc_pbmBrushMip->bm_pbrBrush;
++  if (brush->br_pfsFieldSettings != NULL)
++  {
++    return;
++  }
+ 
+ 
+   FOREACHINSTATICARRAY(bscSector.bsc_abpoPolygons, CBrushPolygon, itpo)
+@@ -694,7 +740,7 @@ static void RT_AddActiveSector(CBrushSector &bscSector, CEntity *penBrush, bool
+       {
+         CBrushPolygonTexture &layerTexture = polygon.bpo_abptTextures[i];
+         CTextureBlending &tb = pScene->GetWorld()->wo_atbTextureBlendings[layerTexture.s.bpt_ubBlend];
+-        
++
+         COLOR colorLayer = layerTexture.s.bpt_colColor;
+ 
+         const float fOpacity = brush->br_penEntity->GetOpacity();
+@@ -705,7 +751,7 @@ static void RT_AddActiveSector(CBrushSector &bscSector, CEntity *penBrush, bool
+           const SLONG slOpacity = NormFloatToByte(fOpacity);
+           UBYTE &layerBlending = tb.tb_ubBlendingType;
+ 
+-          // if texture is opaque 
++          // if texture is opaque
+           if ((layerBlending & STXF_BLEND_MASK) == 0)
+           {
+             // set it to blend with opaque alpha
+@@ -732,13 +778,74 @@ static void RT_AddActiveSector(CBrushSector &bscSector, CEntity *penBrush, bool
+       }
+     }
+ 
+-    bool hasScrollingTextures = RT_HasScrollingTextures(polygon);
+-
+     // commented to have brushPartIndex consistent with the previous uploads
+     /*if (onlyTexCoords && !hasScrollingTextures)
+     {
+       continue;
+     }*/
++  #pragma endregion
++
++
++    RT_PolygonBatchEntry e = {};
++    e.polygon = &polygon;
++    for (uint32_t i = 0; i < MAX_BRUSH_TEXTURE_COUNT; i++)
++    {
++      e.textureKeys[i] = RT_GetTextureBatchKey(polygon.bpo_abptTextures[i]);
++    }
++    e.blending = curBlending;
++    e.polygonFlags = polygonFlags;
++    e.maskBit = pScene->GetCustomInfo()->GetBrushMaskBit(&polygon);
++    e.hasScrollingTextures = RT_HasScrollingTextures(polygon);
++    e.isMirror = isMirror;
++    e.isWarpPortal = isWarpPortal;
++    e.noMediaChange = pScene->GetCustomInfo()->DoesPolygonPreserveTheSameMedia(&polygon);
++    e.order = (uint32_t)entries.size();
++
++    entries.push_back(e);
++  }
++}
++
++
++static void RT_AddBatchedPolygons(std::vector<RT_PolygonBatchEntry> &entries, CEntity *penBrush, bool onlyTexCoords, bool onlyRasterized, SSRT::Scene *pScene)
++{
++  ASSERT(RT_AllSectorVertices.Count() == 0 || RT_AllSectorIndices.Count() == 0);
++
++  if (entries.empty())
++  {
++    return;
++  }
++
++  std::sort(entries.begin(), entries.end(), RT_PolygonBatchLess);
++
++
++  // keep last rendered info, to batch geometry
++  BrushFlushInfo lastInfo = BrushFlushInfo();
++
++
++  auto flushLastSavedInfo = [&] ()
++  {
++    if (!onlyTexCoords)
++    {
++      RT_FlushBrushInfo(penBrush, RT_BrushPartIndex, lastInfo, onlyRasterized, pScene);
++    }
++    // update tex coords only for scrolling textures
++    else if (lastInfo.hasScrollingTextures)
++    {
++      RT_UpdateBrushTexCoords(penBrush, RT_BrushPartIndex, pScene);
++    }
++
++    RT_BrushClear();
++
++    // TODO: use polygon ID as a base index and flush ID as additional
++    RT_BrushPartIndex++;
++  };
++
++
++  for (const RT_PolygonBatchEntry &e : entries)
++  {
++    CBrushPolygon &polygon = *e.polygon;
++
++    const bool hasScrollingTextures = e.hasScrollingTextures;
+ 
+     bool isWaterPolygon = false;
+     bool isWaterTexture[MAX_BRUSH_TEXTURE_COUNT] = {};
+@@ -748,23 +855,17 @@ static void RT_AddActiveSector(CBrushSector &bscSector, CEntity *penBrush, bool
+       isWaterPolygon = RT_HasWaterTextures(polygon, isWaterTexture, pScene);
+     }
+ 
+-    RgGeometryPrimaryVisibilityType maskBit = pScene->GetCustomInfo()->GetBrushMaskBit(&polygon);
+-  #pragma endregion
+-
+-
+-    bool noMediaChange = pScene->GetCustomInfo()->DoesPolygonPreserveTheSameMedia(&polygon);
+-
+ 
+     // if settings are different
+     bool mustBeFlushed =
+       !RT_AreTexturesSame(lastInfo.textures, polygon.bpo_abptTextures) ||
+-      !RT_AreBlendingsSame(lastInfo.blending, curBlending) ||
+-      lastInfo.polygonFlags != polygonFlags ||
++      !RT_AreBlendingsSame(lastInfo.blending, e.blending) ||
++      lastInfo.polygonFlags != e.polygonFlags ||
+       lastInfo.hasScrollingTextures != hasScrollingTextures ||
+-      lastInfo.maskBit != maskBit ||
+-      lastInfo.isMirror != isMirror ||
+-      lastInfo.isWarpPortal != isWarpPortal ||
+-      lastInfo.noMediaChangeOnRefraction != noMediaChange;
++      lastInfo.maskBit != e.maskBit ||
++      lastInfo.isMirror != e.isMirror ||
++      lastInfo.isWarpPortal != e.isWarpPortal ||
++      lastInfo.noMediaChangeOnRefraction != e.noMediaChange;
+ 
+     if (mustBeFlushed)
+     {
+@@ -793,14 +894,14 @@ static void RT_AddActiveSector(CBrushSector &bscSector, CEntity *penBrush, bool
+ 
+ 
+     // rewrite last info
+-    lastInfo.polygonFlags = polygonFlags;
+-    lastInfo.blending = curBlending;
++    lastInfo.polygonFlags = e.polygonFlags;
++    lastInfo.blending = e.blending;
+     lastInfo.hasScrollingTextures = hasScrollingTextures;
+     lastInfo.isWater = isWaterPolygon;
+-    lastInfo.maskBit = maskBit;
+-    lastInfo.isMirror = isMirror;
+-    lastInfo.isWarpPortal = isWarpPortal;
+-    lastInfo.noMediaChangeOnRefraction = noMediaChange;
++    lastInfo.maskBit = e.maskBit;
++    lastInfo.isMirror = e.isMirror;
++    lastInfo.isWarpPortal = e.isWarpPortal;
++    lastInfo.noMediaChangeOnRefraction = e.noMediaChange;
+     for (uint32_t i = 0; i < MAX_BRUSH_TEXTURE_COUNT; i++)
+     {
+       lastInfo.textures[i] = &polygon.bpo_abptTextures[i];
+@@ -854,6 +955,10 @@ static void RT_ProcessBrushEntity(CEntity *penBrush, bool onlyTexCoords, bool on
+   // if brush mip exists for that mip factor
+   if (pbm != NULL)
+   {
++    // reused between calls to avoid per-frame allocations
++    static std::vector<RT_PolygonBatchEntry> entries;
++    entries.clear();
++
+     // for each sector
+     FOREACHINDYNAMICARRAY(pbm->bm_abscSectors, CBrushSector, itbsc)
+     {
+@@ -861,10 +966,13 @@ static void RT_ProcessBrushEntity(CEntity *penBrush, bool onlyTexCoords, bool on
+       if (!(itbsc->bsc_ulFlags & BSCF_HIDDEN) &&
+           !pScene->GetCustomInfo()->IsBrushSectorIgnored(itbsc))
+       {
+-        // add that sector to active sectors
+-        RT_AddActiveSector(itbsc.Current(), penBrush, onlyTexCoords, onlyRasterized, pScene);
++        // collect polygons of that sector
++        RT_CollectSectorPolygons(itbsc.Current(), penBrush, pScene, entries);
+       }
+     }
++
++    // batch polygons of all active sectors by their material state
++    RT_AddBatchedPolygons(entries, penBrush, onlyTexCoords, onlyRasterized, pScene);
+   }
+ }
+ 
+diff --git a/SamTSE/Sources/Engine/Raytracing/Scene.cpp b/SamTSE/Sources/Engine/Raytracing/Scene.cpp
+index 6777a2c06a590487334bf83ebb156538f6186a7d..8fd0af47983ccd95e8d1bb7545f9db5330b5a2bf 100644
+--- a/SamTSE/Sources/Engine/Raytracing/Scene.cpp
++++ b/SamTSE/Sources/Engine/Raytracing/Scene.cpp
+@@ -501,6 +501,8 @@ void SSRT::Scene::ProcessBrushes()
+   r = rgSubmitStaticGeometries(instance);
+   RG_CHECKERROR(r);
+ 
++  pSceneBrushes->OnStaticGeometrySubmitted();
++
+ #ifndef NDEBUG
+   CPrintF("SSRT scene's brushes were uploaded.\n");
+ #endif // !NDEBUG
+diff --git a/SamTSE/Sources/Engine/Raytracing/SceneBrushes.cpp b/SamTSE/Sources/Engine/Raytracing/SceneBrushes.cpp
+index 462d00c2d36dd7de118009a13c68da668ffed6c6..09300515519c047f9cd18ea3a523440e561d383f 100644
+--- a/SamTSE/Sources/Engine/Raytracing/SceneBrushes.cpp
++++ b/SamTSE/Sources/Engine/Raytracing/SceneBrushes.cpp
+@@ -30,9 +30,24 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ 
+ extern SSRT::SSRTGlobals _srtGlobals;
+ 
++// SSTRE: RTGL1 static capacity (RTGL1 Generated/ShaderCommonC.h, VertexCollector::AddGeometry).
++// Static and dynamic geometries share MAX_BOTTOM_LEVEL_GEOMETRIES_COUNT (4096) slots, so a part
++// of it is reserved for the dynamic geometry (models, particles) of each frame.
++// RTGL1 drops geometry beyond these limits without returning an error.
++static constexpr uint32_t SSRT_RTGL1_MAX_GEOMETRIES          = 4096;
++static constexpr uint32_t SSRT_RTGL1_RESERVED_DYNAMIC_GEOMS  = 1024;
++static constexpr uint32_t SSRT_RTGL1_MAX_STATIC_VERTICES     = 1048576;
++static constexpr uint32_t SSRT_RTGL1_MAX_STATIC_INDICES      = 1048576 * 3;
++
++static uint32_t AlignUpBy3(uint32_t x)
++{
++  return ((x + 2) / 3) * 3;
++}
++
+ 
+ SSRT::SceneBrushes::SceneBrushes(RgInstance _instance, CWorld *_pWorld, TextureUploader *_pTextureUploader)
+-  : instance(_instance), pTextureUploader(_pTextureUploader), bRefreshMovableStates(false)
++  : instance(_instance), pTextureUploader(_pTextureUploader), bRefreshMovableStates(false),
++    staticGeometryCount(0), staticVertexCount(0), staticIndexCount(0), staticDroppedCount(0)
+ {
+ }
+ 
+@@ -54,6 +69,36 @@ static void GetBlendingFromMaterialBlending(
+   }
+ }
+ 
++bool SSRT::SceneBrushes::FitsIntoStaticBudget(const CBrushGeometry &brush)
++{
++  // same accounting as RTGL1's VertexCollector::AddGeometry
++  const uint32_t newGeomCount   = staticGeometryCount + 1;
++  const uint32_t newVertexCount = AlignUpBy3(staticVertexCount) + brush.vertexCount;
++  const uint32_t newIndexCount  = AlignUpBy3(staticIndexCount) + brush.indexCount;
++
++  if (newGeomCount   >= SSRT_RTGL1_MAX_GEOMETRIES - SSRT_RTGL1_RESERVED_DYNAMIC_GEOMS ||
++      newVertexCount >= SSRT_RTGL1_MAX_STATIC_VERTICES ||
++      newIndexCount  >= SSRT_RTGL1_MAX_STATIC_INDICES)
++  {
++    staticDroppedCount++;
++    return false;
++  }
++
++  staticGeometryCount = newGeomCount;
++  staticVertexCount = newVertexCount;
++  staticIndexCount = newIndexCount;
++  return true;
++}
++
++void SSRT::SceneBrushes::OnStaticGeometrySubmitted()
++{
++  if (staticDroppedCount > 0)
++  {
++    CPrintF("RT: %u brush parts exceed the RTGL1 static geometry budget and are not ray traced (%u parts, %u vertices, %u indices uploaded).\n",
++            staticDroppedCount, staticGeometryCount, staticVertexCount, staticIndexCount);
++  }
++}
++
+ void SSRT::SceneBrushes::RegisterBrush(const CBrushGeometry &brush)
+ {
+   if (brush.vertices == nullptr || brush.vertexCount == 0 || brush.indices == nullptr || brush.indexCount == 0)
+@@ -65,6 +110,12 @@ void SSRT::SceneBrushes::RegisterBrush(const CBrushGeometry &brush)
+   {
+     ASSERT(!brush.isSky);
+ 
++    // RTGL1 would silently ignore it; don't register it, so it's never referenced later
++    if (!FitsIntoStaticBudget(brush))
++    {
++      return;
++    }
++
+     RgGeometryUploadInfo stInfo = {};
+     stInfo.uniqueID = brush.GetUniqueID();
+     stInfo.geomType = brush.isMovable ?
+@@ -107,6 +158,12 @@ void SSRT::SceneBrushes::RegisterBrush(const CBrushGeometry &brush)
+ 
+     RgResult r = rgUploadGeometry(instance, &stInfo);
+     RG_CHECKERROR(r);
++
++    // don't register parts that weren't uploaded
++    if (r != RG_SUCCESS)
++    {
++      return;
++    }
+   }
+   else
+   {
+diff --git a/SamTSE/Sources/Engine/Raytracing/SceneBrushes.h b/SamTSE/Sources/Engine/Raytracing/SceneBrushes.h
+index 2880e515395086588c0541ac946da7021637bcc4..e6a935e8ef163cf0671c4572b90a6846930644db 100644
+--- a/SamTSE/Sources/Engine/Raytracing/SceneBrushes.h
++++ b/SamTSE/Sources/Engine/Raytracing/SceneBrushes.h
+@@ -47,7 +47,11 @@ public:
+ 
+   void ResetOnGameStop();
+ 
++  // Report geometry that did not fit into the RTGL1 static budget
++  void OnStaticGeometrySubmitted();
++
+ private:
++  bool FitsIntoStaticBudget(const CBrushGeometry &brush);
+   void RegisterBrushTextures(const CBrushGeometry &brush);
+ 
+   void UpdateMovableBrush(CEntity *pBrushEntity);
+@@ -82,6 +86,13 @@ private:
+   std::map<ULONG, MovableState>           entityToMovableBrushPlacement;
+   bool                                    bRefreshMovableStates;
+ 
++  // SSTRE: RTGL1 silently drops static geometry beyond its fixed capacity
++  // (rgUploadGeometry still returns RG_SUCCESS), so the budget is tracked here
++  uint32_t                                staticGeometryCount;
++  uint32_t                                staticVertexCount;
++  uint32_t                                staticIndexCount;
++  uint32_t                                staticDroppedCount;
++
+   // True, if entity with that ID (key) has effect or aniamated texture.
+   // Used for updating it every frame, as brushes are processed only once.
+   std::set<ULONG>                         entityHasNonStaticTexture;

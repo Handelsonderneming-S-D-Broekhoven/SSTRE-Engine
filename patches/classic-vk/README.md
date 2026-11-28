@@ -18,6 +18,9 @@ Applies to tx00100xt/SeriousSamClassic-VK at the commit pinned in [`upstream.loc
 | 0025 | Log failed RTGL1 calls in Release builds (TSE) | SSTRE (E5) |
 | 0028–0029, 0031 | Data-driven RT world tuning: `CustomInfoTuning.cpp` and `SSTRE/RT/WorldTuning.txt` (TSE, TFE) replace Serious-Engine-RT's hard-coded tables | SSTRE (E5); the TFE table migrates Serious-Engine-RT's public values and texture lists |
 | 0030 | CMake/Linux builds compile TSE without the RT layer | SSTRE (EXP-017) |
+| 0032 | TSE RT tuning: `haze = 0` by default (fixes darkness beyond ~20 m; SE1 fog/haze was rendered as under-water media) | SSTRE (E5, EXP-018) |
+| 0033 | RT brush export batched per entity and material (5127 → 1405 geometries on `1_2_Palenque`), plus a guard for RTGL1's 4096-geometry static capacity (TFE, TSE) | SSTRE (E5, EXP-018); changes files ported from Serious-Engine-RT |
+| 0034 | Build RT particles only inside the RT particle pass (null-scene crash from first-person particles; TFE, TSE) | SSTRE (E5, EXP-018); changes a file ported from Serious-Engine-RT |
 
 ## Code from the secondary upstream (ADR-0008 amendment A1)
 
