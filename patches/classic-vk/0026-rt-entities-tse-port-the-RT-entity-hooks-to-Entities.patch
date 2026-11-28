@@ -1,0 +1,149 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Sat, 28 Nov 2026 00:46:42 +0100
+Subject: [PATCH] rt(entities,tse): port the RT entity hooks to EntitiesMP
+
+Replays 1fd1cd9f (TFE Entities) onto SamTSE/Sources/EntitiesMP:
+- PlayerWeapons.es: no RelativeToAbsoluteSmooth() for the first-person
+  weapon (and its mirror) under GAT_RT; applied cleanly.
+- Player.es: ctl_bFlashlight + shell symbol, per-tick flashlight state
+  (srt_bFlashlightEnable) only while alive and not in a cutscene, and
+  the RT-only BodyRemoveItem() guarded to GAT_RT. Hand-applied: the
+  3-way merge produced two large conflict regions because TSE's shell
+  declarations use (void *) casts and extra controls, not because the
+  logic differs.
+- Common/HUD.cpp: hud_bShowFlashlightHint and the RT flashlight hint.
+  Hand-applied next to TSE's hud_bShowMatchInfo declaration.
+
+Eyeman.es (RT: dead invisible Eyemen cast shadows) and the TFE
+WeaponPositions/FOV tweaks are UX-only and not ported, as for TFE.
+
+Ported code: Serious-Engine-RT (https://github.com/sultim-t/Serious-Engine-RT,
+GPL-2.0-only) by Sultim Tsyrendashiev; original copyright notices kept.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ SamTSE/Sources/EntitiesMP/Common/HUD.cpp   | 18 +++++++++++++++++
+ SamTSE/Sources/EntitiesMP/Player.es        | 23 ++++++++++++++++++++++
+ SamTSE/Sources/EntitiesMP/PlayerWeapons.es | 10 ++++++++--
+ 3 files changed, 49 insertions(+), 2 deletions(-)
+
+diff --git a/SamTSE/Sources/EntitiesMP/Common/HUD.cpp b/SamTSE/Sources/EntitiesMP/Common/HUD.cpp
+index 10bc0c4373c6120badb4f68fde5437925ed88b83..081a61e8ad95f3fda542e790c2120e4c74c8e20a 100644
+--- a/SamTSE/Sources/EntitiesMP/Common/HUD.cpp
++++ b/SamTSE/Sources/EntitiesMP/Common/HUD.cpp
+@@ -63,6 +63,8 @@ extern FLOAT hud_fOpacity;
+ extern FLOAT hud_fScaling;
+ extern FLOAT hud_tmWeaponsOnScreen;
+ extern INDEX hud_bShowMatchInfo;
++// RT: flashlight hint (from Serious-Engine-RT)
++extern INDEX hud_bShowFlashlightHint = 0;
+ extern INDEX hud_bWeaponsIconScale; // HUD weapons icons scale: 0 - small, 1 - big
+ 
+ // player statistics sorting keys
+@@ -1390,6 +1392,19 @@ extern void DrawHUD( const CPlayer *penPlayerCurrent, CDrawPort *pdpCurrent, BOO
+     _pDP->SetTextCharSpacing( -2.0f*fTextScale);
+     _pDP->PutTextR( strLatency, _pixDPWidth, _pixDPHeight-pixFontHeight, C_WHITE|CT_OPAQUE);
+   }
++
++  // RT: show
++  if (_pGfx->gl_eCurrentAPI == GfxAPIType::GAT_RT && hud_bShowFlashlightHint)
++  {
++    bool isColored = (INDEX)(_pTimer->GetLerpedCurrentTick() * 2.0f) % 2;
++    CTString strFlashlightHint = isColored ? "Press a ^c24D500Flashlight^r button to toggle it" : "Press a Flashlight button to toggle it";
++    _pfdDisplayFont->SetVariableWidth();
++    _pDP->SetFont(_pfdDisplayFont);
++    _pDP->SetTextScaling(_fResolutionScaling * hud_fScaling * 2.0f);
++    _pDP->SetTextCharSpacing(1);
++    _pDP->PutTextCXY(strFlashlightHint, _pixDPWidth * 0.5f, _pixDPHeight * 0.65f, C_WHITE | CT_OPAQUE);
++  }
++
+   // restore font defaults
+   _pfdDisplayFont->SetVariableWidth();
+   _pDP->SetFont( &_fdNumbersFont);
+@@ -1517,6 +1532,9 @@ extern void DrawHUD( const CPlayer *penPlayerCurrent, CDrawPort *pdpCurrent, BOO
+ // initialize all that's needed for drawing the HUD
+ extern void InitHUD(void)
+ {
++  // RT: ugly way
++  _pShell->DeclareSymbol("INDEX hud_bShowFlashlightHint;", (void *) &hud_bShowFlashlightHint);
++
+   // try to
+   try {
+     // initialize and load HUD numbers font
+diff --git a/SamTSE/Sources/EntitiesMP/Player.es b/SamTSE/Sources/EntitiesMP/Player.es
+index e82e0f4220d3bed77e0d61c9774cbcdca6af95f4..00e4f42edb316b0c1e16666c5efb32b27b93e097 100644
+--- a/SamTSE/Sources/EntitiesMP/Player.es
++++ b/SamTSE/Sources/EntitiesMP/Player.es
+@@ -443,6 +443,9 @@ static FLOAT ctl_fButtonRotationSpeedB = 150.0f;
+ // modifier for axis strafing
+ static FLOAT ctl_fAxisStrafingModifier = 1.0f;
+ 
++// RT: flashlight
++static INDEX ctl_bFlashlight = 0;
++
+ // !=NULL if some player wants to call computer
+ DECL_DLL class CPlayer *cmp_ppenPlayer = NULL;
+ // !=NULL for rendering computer on secondary display in dualhead
+@@ -752,6 +755,8 @@ void CPlayer_OnInitClass(void)
+   _pShell->DeclareSymbol("persistent user FLOAT ctl_fButtonRotationSpeedP;", (void *) &ctl_fButtonRotationSpeedP);
+   _pShell->DeclareSymbol("persistent user FLOAT ctl_fButtonRotationSpeedB;", (void *) &ctl_fButtonRotationSpeedB);
+   _pShell->DeclareSymbol("persistent user FLOAT ctl_fAxisStrafingModifier;", (void *) &ctl_fAxisStrafingModifier);
++  // RT: flashlight
++  _pShell->DeclareSymbol("user INDEX ctl_bFlashlight;", (void *) &ctl_bFlashlight);
+   //new
+   _pShell->DeclareSymbol("user INDEX ctl_bSniperZoomIn;",         (void *) &pctlCurrent.bSniperZoomIn);
+   _pShell->DeclareSymbol("user INDEX ctl_bSniperZoomOut;",        (void *) &pctlCurrent.bSniperZoomOut);
+@@ -3767,6 +3772,24 @@ functions:
+       DeathActions(paAction);
+     }
+ 
++    if ((GetFlags() & ENF_ALIVE) && m_penActionMarker==NULL)
++    {
++      // RT: flashlight enable/disable, only if alive and not in cutscene
++      _pShell->SetINDEX("srt_bFlashlightEnable", ctl_bFlashlight);
++
++      // SSTRE: only under ray tracing, so raster gameplay stays unchanged
++      if (_pGfx->gl_eCurrentAPI == GAT_RT) {
++        CPlayerAnimator &plan = (CPlayerAnimator&)*m_penAnimator;
++        plan.BodyRemoveItem();
++      }
++    }
++    else
++    {
++      // RT: flashlight must be disabled otherwise
++      _pShell->SetINDEX("srt_bFlashlightEnable", 0);
++      ctl_bFlashlight = 0;
++    }
++
+     if (Abs(_pTimer->CurrentTick()-m_tmAnalyseEnd)<_pTimer->TickQuantum*2) {
+       m_tmAnalyseEnd = 0;
+       m_bPendingMessage = TRUE;
+diff --git a/SamTSE/Sources/EntitiesMP/PlayerWeapons.es b/SamTSE/Sources/EntitiesMP/PlayerWeapons.es
+index 5018bb3e6e20c256954f310f0ca2b18f52a37fd5..9ed08248e3e33de94293010dcfc111d7ffacb61b 100644
+--- a/SamTSE/Sources/EntitiesMP/PlayerWeapons.es
++++ b/SamTSE/Sources/EntitiesMP/PlayerWeapons.es
+@@ -1016,7 +1016,10 @@ functions:
+       BeginModelRenderingView(apr, pdp);
+ 
+       WeaponMovingOffset(plWeaponMirror.pl_PositionVector);
+-      plWeaponMirror.RelativeToAbsoluteSmooth(plView);
++      if (_pGfx->gl_eCurrentAPI != GAT_RT) 
++      {
++        plWeaponMirror.RelativeToAbsoluteSmooth(plView);
++      }
+       rmMain.SetObjectPlacement(plWeaponMirror);
+ 
+       rmMain.rm_colLight   = colLight;
+@@ -1050,7 +1053,10 @@ functions:
+     BeginModelRenderingView(apr, pdp);
+ 
+     WeaponMovingOffset(plWeapon.pl_PositionVector);
+-    plWeapon.RelativeToAbsoluteSmooth(plView);
++    if (_pGfx->gl_eCurrentAPI != GAT_RT) 
++    { 
++      plWeapon.RelativeToAbsoluteSmooth(plView);
++    }
+     rmMain.SetObjectPlacement(plWeapon);
+ 
+     rmMain.rm_colLight   = colLight;  

@@ -1,0 +1,34 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Sat, 28 Nov 2026 00:46:43 +0100
+Subject: [PATCH] rt(controls,tse): bind the RT flashlight in the default TSE
+ controls
+
+Adds the "Flashlight" button (ctl_bFlashlight toggle) from
+Serious-Engine-RT's Controls/00-Default.ctl to TSE's default controls.
+TSE uses F for Down/Duck, so the default key is L instead of RT's F.
+Only affects controls loaded from the default set; the variable does
+nothing outside ray tracing.
+
+Ported code: Serious-Engine-RT (https://github.com/sultim-t/Serious-Engine-RT,
+GPL-2.0-only) by Sultim Tsyrendashiev; original copyright notices kept.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ SamTSE/Controls/00-Default.ctl | 7 +++++++
+ 1 file changed, 7 insertions(+)
+
+diff --git a/SamTSE/Controls/00-Default.ctl b/SamTSE/Controls/00-Default.ctl
+index 7f0cecea003c28170bfd5fe656ca41dcd4ee9cca..5757cd4890e010024ef3d803d1590660d7c4f5af 100755
+--- a/SamTSE/Controls/00-Default.ctl
++++ b/SamTSE/Controls/00-Default.ctl
+@@ -112,2 +112,9 @@ Button
+ 
++Button
++ Name: TTRS Flashlight
++ Key1: L
++ Key2: None
++ Pressed:  ctl_bFlashlight = !ctl_bFlashlight;
++ Released: ;
++
+ Button

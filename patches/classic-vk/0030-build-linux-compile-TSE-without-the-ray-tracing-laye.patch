@@ -1,0 +1,376 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Sat, 28 Nov 2026 02:12:10 +0100
+Subject: [PATCH] build(linux): compile TSE without the ray-tracing layer
+ (SE1_RAYTRACING=0)
+
+Same change as for the TFE tree, now that the TSE tree carries the RT
+transplant: SE1_RAYTRACING in GfxLibrary.h (0 for CMake builds, set in
+SamTSE/Sources/CMakeLists.txt), stubs for the CGfxLibrary RT entry
+points and RT_Particle_* hooks in Gfx_RayTracing.cpp, #if SE1_RAYTRACING
+around the blocks that use SSRT types (DrawPort.cpp, Render.cpp,
+RenderModel.cpp, Gfx_wrapper.cpp), and CMake builds Gfx_RayTracing.cpp,
+Raytracing/RTGL1Loader.cpp and Models/RTModelNormalsFix.cpp.
+
+Windows behaviour is unchanged.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ SamTSE/Sources/CMakeLists.txt                 | 10 ++++++
+ SamTSE/Sources/Engine/Graphics/DrawPort.cpp   | 20 +++++++++++
+ SamTSE/Sources/Engine/Graphics/GfxLibrary.h   | 13 ++++++++
+ .../Engine/Graphics/Gfx_RayTracing.cpp        | 33 +++++++++++++++++++
+ .../Sources/Engine/Graphics/Gfx_wrapper.cpp   |  4 +++
+ SamTSE/Sources/Engine/Models/RenderModel.cpp  |  4 +++
+ SamTSE/Sources/Engine/Rendering/Render.cpp    |  4 +++
+ 7 files changed, 88 insertions(+)
+
+diff --git a/SamTSE/Sources/CMakeLists.txt b/SamTSE/Sources/CMakeLists.txt
+index 53313ac3dd8db14d5289a1e5cb889709bb68c094..1198ae301e1fba8f1db891c8ef7de5399a2f2c65 100644
+--- a/SamTSE/Sources/CMakeLists.txt
++++ b/SamTSE/Sources/CMakeLists.txt
+@@ -123,6 +123,10 @@ endif()
+ 
+ option(TFE "Compile a The First Encounter version" FALSE)
+ 
++# SSTRE: the ray-tracing layer is built only by the Windows x64 MSBuild projects
++# (see SE1_RAYTRACING in Engine/Graphics/GfxLibrary.h).
++add_definitions(-DSE1_RAYTRACING=0)
++
+ if(INTERNAL_NAME STREQUAL "serioussam")
+  add_definitions(-DFIRST_ENCOUNTER=1)
+  if(USE_SYSTEM_VULKAN)
+@@ -1229,6 +1233,9 @@ set(ENGINE_SRCS
+     Engine/Graphics/TextureEffects.cpp
+     Engine/Graphics/DrawPort.cpp
+     Engine/Graphics/Gfx_wrapper.cpp
++    Engine/Graphics/Gfx_RayTracing.cpp
++    Engine/Raytracing/RTGL1Loader.cpp
++    Engine/Models/RTModelNormalsFix.cpp
+     Engine/Graphics/DrawPort_Particles.cpp
+     Engine/Graphics/Graphics.cpp
+     Engine/Graphics/ViewPort.cpp
+@@ -1410,6 +1417,9 @@ set(ENGINE_SRCS
+     Engine/Graphics/TextureEffects.cpp
+     Engine/Graphics/DrawPort.cpp
+     Engine/Graphics/Gfx_wrapper.cpp
++    Engine/Graphics/Gfx_RayTracing.cpp
++    Engine/Raytracing/RTGL1Loader.cpp
++    Engine/Models/RTModelNormalsFix.cpp
+     Engine/Graphics/DrawPort_Particles.cpp
+     Engine/Graphics/Graphics.cpp
+     Engine/Graphics/ViewPort.cpp
+diff --git a/SamTSE/Sources/Engine/Graphics/DrawPort.cpp b/SamTSE/Sources/Engine/Graphics/DrawPort.cpp
+index c5b28503e97a00c49794057b1e5d02fb2d95183c..4a4dcfd28f90be6a685e778b62b3260f95a90fb9 100644
+--- a/SamTSE/Sources/Engine/Graphics/DrawPort.cpp
++++ b/SamTSE/Sources/Engine/Graphics/DrawPort.cpp
+@@ -41,13 +41,16 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #include <Engine/Graphics/Vulkan/SvkMain.h>
+ #endif
+ 
++#if SE1_RAYTRACING
+ #include <Engine/Raytracing/SSRT.h>
++#endif
+ 
+ extern INDEX gfx_bDecoratedText;
+ extern INDEX ogl_iFinish;
+ extern INDEX d3d_iFinish;
+ 
+ 
++#if SE1_RAYTRACING
+ namespace SSRT
+ {
+ // Special static variables that are set in InitTexture(..) and used 
+@@ -56,6 +59,7 @@ namespace SSRT
+ static CTextureData *ssrt_pTextureData = nullptr;
+ static GfxWrap ssrt_eWrap = GFX_REPEAT;
+ }
++#endif // SE1_RAYTRACING
+ 
+ 
+ 
+@@ -465,6 +469,7 @@ BOOL CDrawPort::Lock(void)
+ 
+ 
+ // function for generating indices for quad HUD elements
++#if SE1_RAYTRACING
+ void HudElement_GenerateQuadIndices(SSRT::CHudElementInfo *preparedInfo)
+ {
+   const INDEX ctElements = preparedInfo->vertexCount * 6 / 4;
+@@ -496,6 +501,7 @@ void HudElement_GenerateQuadIndices(SSRT::CHudElementInfo *preparedInfo)
+   preparedInfo->pIndices = &_aiCommonQuads[0];
+   preparedInfo->indexCount = ctElements;
+ }
++#endif // SE1_RAYTRACING
+ 
+ 
+ // draw one point
+@@ -988,6 +994,7 @@ void CDrawPort::Fill( PIX pixI, PIX pixJ, PIX pixWidth, PIX pixHeight,
+     pvtx[3].x = fI1;  pvtx[3].y = fJ0;  pvtx[3].z = 0;  pcol[3] = glcolUR;
+ 
+ 
++#if SE1_RAYTRACING
+     if (eAPI == GAT_RT)
+     {
+       SSRT::CHudElementInfo hudInfo = {};
+@@ -1004,6 +1011,7 @@ void CDrawPort::Fill( PIX pixI, PIX pixJ, PIX pixWidth, PIX pixHeight,
+ 
+       _pGfx->gl_SSRT->ProcessHudElement(hudInfo);
+     }
++#endif // SE1_RAYTRACING
+ 
+     gfxFlushQuads();
+   }
+@@ -1662,6 +1670,7 @@ void CDrawPort::PutText( const CTString &strText, PIX pixX0, PIX pixY0, const CO
+ 
+ 
+   
++#if SE1_RAYTRACING
+   if (eAPI == GAT_RT && _avtxCommon.Count() > 0)
+   {
+     SSRT::CHudElementInfo hudInfo = {};
+@@ -1679,6 +1688,7 @@ void CDrawPort::PutText( const CTString &strText, PIX pixX0, PIX pixY0, const CO
+ 
+     _pGfx->gl_SSRT->ProcessHudElement(hudInfo);
+   }
++#endif // SE1_RAYTRACING
+ 
+ 
+   gfxFlushQuads();
+@@ -1818,6 +1828,7 @@ void CDrawPort::PutTexture( class CTextureObject *pTO,
+   pcol[3] = glcolUR;
+ 
+ 
++#if SE1_RAYTRACING
+   if (eAPI == GAT_RT)
+   {    
+     SSRT::CHudElementInfo hudInfo = {};
+@@ -1835,6 +1846,7 @@ void CDrawPort::PutTexture( class CTextureObject *pTO,
+ 
+     _pGfx->gl_SSRT->ProcessHudElement(hudInfo);
+   }
++#endif // SE1_RAYTRACING
+ 
+ 
+   gfxFlushQuads();
+@@ -1857,22 +1869,26 @@ void CDrawPort::InitTexture( class CTextureObject *pTO, const BOOL bClamp/*=FALS
+     if( bClamp) eWrap = GFX_CLAMP;
+     gfxSetTextureWrapping( eWrap, eWrap);
+     
++#if SE1_RAYTRACING
+     if (eAPI == GAT_RT)
+     {
+       SSRT::ssrt_pTextureData = ptd;
+       SSRT::ssrt_eWrap = eWrap;
+     }
+     else
++#endif // SE1_RAYTRACING
+     {
+       ptd->SetAsCurrent(pTO->GetFrame());
+     }
+   } 
+   else 
+   {
++#if SE1_RAYTRACING
+     if (eAPI == GAT_RT)
+     {
+       SSRT::ssrt_pTextureData = nullptr;
+     }
++#endif // SE1_RAYTRACING
+ 
+     // no texture
+     gfxDisableTexture();
+@@ -2002,6 +2018,7 @@ void CDrawPort::FlushRenderingQueue(void) const
+ {
+   const GfxAPIType eAPI = _pGfx->gl_eCurrentAPI;
+   
++#if SE1_RAYTRACING
+   if (eAPI == GAT_RT)
+   {
+     SSRT::CHudElementInfo hudInfo = {};
+@@ -2025,6 +2042,7 @@ void CDrawPort::FlushRenderingQueue(void) const
+ 
+     SSRT::ssrt_pTextureData = nullptr;
+   }
++#endif // SE1_RAYTRACING
+ 
+   gfxFlushElements(); 
+   gfxResetArrays(); 
+@@ -2073,6 +2091,7 @@ void CDrawPort::BlendScreen(void)
+ 
+   const GfxAPIType eAPI = _pGfx->gl_eCurrentAPI;
+ 
++#if SE1_RAYTRACING
+   if (eAPI == GAT_RT && _avtxCommon.Count() > 0)
+   {
+     SSRT::CHudElementInfo hudInfo = {};
+@@ -2089,6 +2108,7 @@ void CDrawPort::BlendScreen(void)
+ 
+     _pGfx->gl_SSRT->ProcessHudElement(hudInfo);
+   }
++#endif // SE1_RAYTRACING
+   
+   gfxFlushQuads();
+   // reset accumulation color
+diff --git a/SamTSE/Sources/Engine/Graphics/GfxLibrary.h b/SamTSE/Sources/Engine/Graphics/GfxLibrary.h
+index 14b3fa4108ace94aa741037bc052db8e98c04d9e..230fd28a7870f674e7ddc793aa2e8bb4ef02bbfc 100644
+--- a/SamTSE/Sources/Engine/Graphics/GfxLibrary.h
++++ b/SamTSE/Sources/Engine/Graphics/GfxLibrary.h
+@@ -49,6 +49,19 @@ class SSRTMain;
+ }
+ #endif // SE1_VULKAN
+ 
++// SSTRE (GPL-2.0-only, Copyright (C) 2026 Handelsonderneming S.D. Broekhoven,
++// trading as ITEagle Europe): the ray-tracing layer (Engine/Raytracing, RTGL1)
++// is built only by the Windows x64 MSBuild projects. Other builds (CMake/Linux)
++// compile with SE1_RAYTRACING=0: raster APIs only, GAT_RT has no adapters and
++// its driver entry points are stubs (Gfx_RayTracing.cpp).
++#ifndef SE1_RAYTRACING
++  #if defined(SE1_VULKAN) && defined(_MSC_VER) && defined(_WIN64)
++    #define SE1_RAYTRACING 1
++  #else
++    #define SE1_RAYTRACING 0
++  #endif
++#endif
++
+ 
+ // WARNING: Changing these constants breaks inline asm on GNU systems!
+ #define SQRTTABLESIZE   8192
+diff --git a/SamTSE/Sources/Engine/Graphics/Gfx_RayTracing.cpp b/SamTSE/Sources/Engine/Graphics/Gfx_RayTracing.cpp
+index edd16b89117cb16671e42033ec590b903666c60b..307f2a41f4cefa2951a1c5e8739c14fee87cc9ef 100644
+--- a/SamTSE/Sources/Engine/Graphics/Gfx_RayTracing.cpp
++++ b/SamTSE/Sources/Engine/Graphics/Gfx_RayTracing.cpp
+@@ -20,6 +20,37 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #include <Engine/Base/Console.h>
+ 
+ #include <Engine/Graphics/GfxLibrary.h>
++
++#if !SE1_RAYTRACING
++// SSTRE (GPL-2.0-only, Copyright (C) 2026 Handelsonderneming S.D. Broekhoven,
++// trading as ITEagle Europe): build without the ray-tracing layer
++// (SE1_RAYTRACING=0, e.g. CMake/Linux). GAT_RT never gets an adapter there;
++// these stubs keep the raster code paths linkable.
++void CGfxLibrary::InitShellVariables_RayTracing() {}
++BOOL CGfxLibrary::InitDriver_RayTracing()
++{
++  CPrintF("Ray tracing is not available in this build.\n");
++  return FALSE;
++}
++void CGfxLibrary::InitContext_RayTracing() {}
++void CGfxLibrary::EndDriver_RayTracing() {}
++BOOL CGfxLibrary::SetCurrentViewport_RayTracing(CViewPort *pvp) { return FALSE; }
++void CGfxLibrary::StartFrame_RayTracing(CRaster *pRaster) {}
++void CGfxLibrary::EndFrame_RayTracing() {}
++void CGfxLibrary::SetViewport_RayTracing(float leftUpperX, float leftUpperY, float width, float height, float minDepth, float maxDepth) {}
++void CGfxLibrary::NotifyGameStoppedSafe_RayTracing() {}
++
++#include <Engine/Graphics/DrawPort.h>
++#include <Engine/Graphics/Texture.h>
++#include <Engine/Raytracing/RTProcessing.h>
++void RT_Particle_PrepareTexture(CTextureObject *pto, enum ParticleBlendType pbt) {}
++void RT_Particle_SetTexturePart(MEX mexWidth, MEX mexHeight, INDEX iCol, INDEX iRow) {}
++void RT_Particle_RenderSquare(const FLOAT3D &vPos, FLOAT fSize, ANGLE aRotation, COLOR col, FLOAT fYRatio) {}
++void RT_Particle_RenderLine(const FLOAT3D &vPos0, const FLOAT3D &vPos1, FLOAT fWidth, COLOR col) {}
++void RT_Particle_RenderQuad3D(const FLOAT3D &vPos0, const FLOAT3D &vPos1, const FLOAT3D &vPos2, const FLOAT3D &vPos3, COLOR col) {}
++void RT_Particle_Flush() {}
++#else // SE1_RAYTRACING
++
+ #include <Engine/Graphics/Vulkan/SvkMain.h>
+ #include <Engine/Graphics/ViewPort.h>
+ 
+@@ -292,3 +323,5 @@ void CGfxLibrary::NotifyGameStoppedSafe_RayTracing()
+     gl_SSRT->NotifyGameStopped();
+   }
+ }
++
++#endif // SE1_RAYTRACING
+diff --git a/SamTSE/Sources/Engine/Graphics/Gfx_wrapper.cpp b/SamTSE/Sources/Engine/Graphics/Gfx_wrapper.cpp
+index 5c7600bbb446b01efd8530956627b1230596d2a0..92593ad71338d230fd2a340dcc05c2b13be84e98 100644
+--- a/SamTSE/Sources/Engine/Graphics/Gfx_wrapper.cpp
++++ b/SamTSE/Sources/Engine/Graphics/Gfx_wrapper.cpp
+@@ -772,7 +772,9 @@ extern ULONG gfxGetColorMask(void)
+ #include "Gfx_wrapper_OpenGL.cpp"
+ #include "Gfx_wrapper_Direct3D.cpp"
+ #include "Gfx_wrapper_Vulkan.cpp"
++#if SE1_RAYTRACING
+ #include "Gfx_wrapper_Raytracing.cpp"
++#endif
+ 
+ 
+ 
+@@ -955,6 +957,7 @@ __extern void GFX_SetFunctionPointers( INDEX iAPI)
+     gfxLockArrays           = &svk_LockArrays;
+     gfxSetColorMask         = &svk_SetColorMask;
+   }
++#if SE1_RAYTRACING
+   else if (iAPI == (INDEX)GAT_RT)
+   {
+     gfxEnableDepthWrite     = &ssrt_void;
+@@ -1004,6 +1007,7 @@ __extern void GFX_SetFunctionPointers( INDEX iAPI)
+     gfxLockArrays           = &ssrt_void;
+     gfxSetColorMask         = &ssrt_SetColorMask;
+   }
++#endif // SE1_RAYTRACING
+ #endif // SE1_VULKAN
+   // NONE!
+   else
+diff --git a/SamTSE/Sources/Engine/Models/RenderModel.cpp b/SamTSE/Sources/Engine/Models/RenderModel.cpp
+index 60806ba1b2787b92a1a018bb44e79f581adce5d2..caf539e40acdb1f9e5e4627ed695bb107cebd422 100644
+--- a/SamTSE/Sources/Engine/Models/RenderModel.cpp
++++ b/SamTSE/Sources/Engine/Models/RenderModel.cpp
+@@ -26,7 +26,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #include <Engine/Base/Lists.inl>
+ #include <Engine/Math/OBBox.h>
+ 
++#if SE1_RAYTRACING
+ #include <Engine/Raytracing/SSRT.h>
++#endif
+ 
+ #include <Engine/Base/ListIterator.inl>
+ #include <Engine/Templates/StaticStackArray.cpp>
+@@ -475,6 +477,7 @@ void CModelObject::SetupModelRendering( CRenderModel &rm)
+ {
+   // weapons are rendered using this function directly from PlayerWeapons.es,
+   // so if ray tracing is enabled and it's a weapon, add it to SSRT
++#if SE1_RAYTRACING
+   if (_pGfx->gl_eCurrentAPI == GAT_RT)
+   {
+     if (rm.rm_ulFlags & RMF_WEAPON)
+@@ -490,6 +493,7 @@ void CModelObject::SetupModelRendering( CRenderModel &rm)
+ 
+     return;
+   }
++#endif // SE1_RAYTRACING
+ 
+ 
+   _sfStats.IncrementCounter( CStatForm::SCI_MODELS);
+diff --git a/SamTSE/Sources/Engine/Rendering/Render.cpp b/SamTSE/Sources/Engine/Rendering/Render.cpp
+index d2284fb8cdce94f5cd21b9dc02950693f86090cf..0a9e84dc8dfedc5f93fc6a651358516f58d73df3 100644
+--- a/SamTSE/Sources/Engine/Rendering/Render.cpp
++++ b/SamTSE/Sources/Engine/Rendering/Render.cpp
+@@ -59,7 +59,9 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #include <Engine/Templates/StaticStackArray.cpp>
+ #include <Engine/Templates/DynamicStackArray.cpp>
+ 
++#if SE1_RAYTRACING
+ #include <Engine/Raytracing/SSRT.h>
++#endif
+ 
+ extern BOOL _bSomeDarkExists;
+ extern INDEX d3d_bAlternateDepthReads;
+@@ -970,6 +972,7 @@ void RenderView(CWorld &woWorld, CEntity &enViewer,
+     woWorld.wo_pecWorldBaseClass->ec_pdecDLLClass->dec_OnWorldRender(&woWorld);
+   }
+ 
++#if SE1_RAYTRACING
+   if (_pGfx->gl_eCurrentAPI == GAT_RT)
+   {
+     SSRT::CWorldRenderingInfo renderInfo = {};
+@@ -1103,6 +1106,7 @@ void RenderView(CWorld &woWorld, CEntity &enViewer,
+     // don't render world using rasterization
+     return;
+   }
++#endif // SE1_RAYTRACING
+ 
+   if (_wrpWorldRenderPrefs.GetShadowsType() == CWorldRenderPrefs::SHT_FULL)
+   {

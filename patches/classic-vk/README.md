@@ -14,10 +14,14 @@ Applies to tx00100xt/SeriousSamClassic-VK at the commit pinned in [`upstream.loc
 | 0016 | Log failed RTGL1 calls in Release builds | SSTRE (EXP-009) |
 | 0017–0018 | `+demo` command-line option; clean end of demo playback (profile report, post-exec) | SSTRE (EXP-011) |
 | 0019 | CMake/Linux builds compile TFE without the RT layer (`SE1_RAYTRACING=0`) | SSTRE (EXP-017) |
+| 0020–0024, 0026–0027 | Ray-tracing backend replayed into the TSE tree (engine, game exe, menu, EntitiesMP hooks, flashlight key) | **ported from Serious-Engine-RT**, adapted by SSTRE (track E5) |
+| 0025 | Log failed RTGL1 calls in Release builds (TSE) | SSTRE (E5) |
+| 0028–0029, 0031 | Data-driven RT world tuning: `CustomInfoTuning.cpp` and `SSTRE/RT/WorldTuning.txt` (TSE, TFE) replace Serious-Engine-RT's hard-coded tables | SSTRE (E5); the TFE table migrates Serious-Engine-RT's public values and texture lists |
+| 0030 | CMake/Linux builds compile TSE without the RT layer | SSTRE (EXP-017) |
 
 ## Code from the secondary upstream (ADR-0008 amendment A1)
 
-Patches 0010–0015 contain code ported from [sultim-t/Serious-Engine-RT](https://github.com/sultim-t/Serious-Engine-RT) at the commit pinned for `serious-engine-rt` in the lock (`0e7f223c`; RT-only changes since its fork point `77a955ba`), GPL-2.0-only, by Sultim Tsyrendashiev. The original copyright notices in the ported files are kept unchanged (the new `Engine/Raytracing/` files therefore carry the original GPL-2.0 notice instead of an SPDX tag), and each of these commit messages names the source and its author. SSTRE adaptations are described in the commit messages.
+Patches 0010–0015, 0020–0024 and 0026–0029 contain code ported from [sultim-t/Serious-Engine-RT](https://github.com/sultim-t/Serious-Engine-RT) at the commit pinned for `serious-engine-rt` in the lock (`0e7f223c`; RT-only changes since its fork point `77a955ba`), GPL-2.0-only, by Sultim Tsyrendashiev. The original copyright notices in the ported files are kept unchanged (the new `Engine/Raytracing/` files therefore carry the original GPL-2.0 notice instead of an SPDX tag), and each of these commit messages names the source and its author. SSTRE adaptations are described in the commit messages.
 
 ## Files flagged by the EXP-004 audit
 
@@ -29,3 +33,5 @@ Exported with 1 line of context (`--flagged-context 1`, ADR-0008 item 4). A flag
 | 0013 | `SamTFE/Sources/Entities/Player.es` | H6 | flashlight toggle, RT-only `BodyRemoveItem()` | lead, 2026-11-28 |
 | 0013 | `SamTFE/Sources/Entities/PlayerWeapons.es` | H6 | first-person weapon render flag | lead, 2026-11-28 |
 | 0015 | `SamTFE/Scripts/Menu/RenderingOptions.cfg` | G4, retail-identical scripts | one `Include:` line; the RT options live in the new SSTRE file `SamTFE/SSTRE/Menu/RenderingOptionsRT.cfg` | pending |
+| 0024 | `SamTSE/Scripts/Menu/RenderingOptions.cfg` | G4 | one `Include:` line (`SamTSE/SSTRE/Menu/RenderingOptionsRT.cfg`) | pending |
+| 0027 | `SamTSE/Controls/00-Default.ctl` | G4, retail-identical controls | +7 lines: "Flashlight" button on L (the controls parser has no include) | pending |
