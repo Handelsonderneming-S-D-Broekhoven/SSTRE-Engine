@@ -1,0 +1,17 @@
+{
+  "schema": "sstre-reviewed-flagged/1",
+  "reviews": [
+    {
+      "patch": "0013-rt-entities-port-the-TFE-RT-entity-hooks-flashlight-.patch",
+      "sha256": "712ee10c23003e3de02872d8d4eebf229380992e9384608f5dce38d929502bd2",
+      "paths": [
+        "SamTFE/Sources/Entities/Common/HUD.cpp",
+        "SamTFE/Sources/Entities/Player.es",
+        "SamTFE/Sources/Entities/PlayerWeapons.es"
+      ],
+      "reviewer": "lead",
+      "date": "2026-11-28",
+      "rationale": "EXP-004 H6 (TFE Entities). Approved: the patch reproduces 16 context lines and 2 deleted lines of structural code only, exported with 1 line of context; the RT entity hooks (flashlight, HUD, first-person weapon render) are functionally necessary for the ray-tracing backend."
+    }
+  ]
+}

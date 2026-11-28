@@ -19,13 +19,13 @@ Applies to tx00100xt/SeriousSamClassic-VK at the commit pinned in [`upstream.loc
 
 Patches 0010–0015 contain code ported from [sultim-t/Serious-Engine-RT](https://github.com/sultim-t/Serious-Engine-RT) at the commit pinned for `serious-engine-rt` in the lock (`0e7f223c`; RT-only changes since its fork point `77a955ba`), GPL-2.0-only, by Sultim Tsyrendashiev. The original copyright notices in the ported files are kept unchanged (the new `Engine/Raytracing/` files therefore carry the original GPL-2.0 notice instead of an SPDX tag), and each of these commit messages names the source and its author. SSTRE adaptations are described in the commit messages.
 
-## Files flagged by the EXP-004 audit (reviewed, `--allow-flagged`)
+## Files flagged by the EXP-004 audit
 
-Exported with 1 line of context (`--flagged-context 1`, ADR-0008 item 4):
+Exported with 1 line of context (`--flagged-context 1`, ADR-0008 item 4). A flagged patch passes `check` only with a matching entry (patch SHA-256) in [`REVIEWED-FLAGGED.json`](REVIEWED-FLAGGED.json); any change to the patch needs a new review.
 
-| Patch | File | Flag |
-|---|---|---|
-| 0013 | `SamTFE/Sources/Entities/Common/HUD.cpp` | H6, TFE Entities of unclear provenance |
-| 0013 | `SamTFE/Sources/Entities/Player.es` | H6 |
-| 0013 | `SamTFE/Sources/Entities/PlayerWeapons.es` | H6 |
-| 0015 | `SamTFE/Scripts/Menu/RenderingOptions.cfg` | G4, retail-identical scripts |
+| Patch | File | Flag | Change | Review |
+|---|---|---|---|---|
+| 0013 | `SamTFE/Sources/Entities/Common/HUD.cpp` | H6, TFE Entities of unclear provenance | RT hooks | lead, 2026-11-28 |
+| 0013 | `SamTFE/Sources/Entities/Player.es` | H6 | flashlight toggle, RT-only `BodyRemoveItem()` | lead, 2026-11-28 |
+| 0013 | `SamTFE/Sources/Entities/PlayerWeapons.es` | H6 | first-person weapon render flag | lead, 2026-11-28 |
+| 0015 | `SamTFE/Scripts/Menu/RenderingOptions.cfg` | G4, retail-identical scripts | one `Include:` line; the RT options live in the new SSTRE file `SamTFE/SSTRE/Menu/RenderingOptionsRT.cfg` | pending |
