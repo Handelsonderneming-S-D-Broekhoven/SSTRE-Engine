@@ -42,7 +42,7 @@ Errors:
 - deletion sections that contain the removed content (re-export with the tool);
 - added or modified files with a game-data, demo, audio or model-weight extension (the umbrella validator's `FORBIDDEN_EXTENSIONS`), or with a binary, archive, image or texture extension (`.exe .dll .lib .so .png .jpg .dds .ktx2 .zip …`);
 - paths under `extracted/` or `workspace/`, `Demos/`, `Images/`, `Github/` (screenshots), `OverridenTextures/` or `Tools.Win32/` (SSTRE EXP-004 G3, G7–G9b, B1);
-- changes to files flagged by the EXP-004 audit, unless reviewed and passed with `--allow-flagged`: TFE `Sources/Entities/**` (H6), `DSOUND.H` (H1), `LWSkaExporter/**` (H2), and the retail-identical game-root `Scripts/`, `Controls/`, `Help/`, `Data/` and `Mods/` (G4–G6). `export` gives such files 1 line of context by default (`--flagged-context`);
+- changes to files flagged by the EXP-004 audit, unless the patch has a matching entry in the series review list (see "Reviewed flagged patches") or `--allow-flagged` is given (local use only; CI never passes it): TFE `Sources/Entities/**` (H6), `DSOUND.H` (H1), `LWSkaExporter/**` (H2), and the retail-identical game-root `Scripts/`, `Controls/`, `Help/`, `Data/` and `Mods/` (G4–G6). `export` gives such files 1 line of context by default (`--flagged-context`);
 - `Signed-off-by` trailers (SSTRE commits never carry one), and trailers that are not in the source commit;
 - submodule or symlink changes, abbreviated `index` lines, non-zero `From` lines, version signatures;
 - file names other than `NNNN-<slug>.patch`, gaps in the numbering, series directories with no lock entry;
@@ -53,6 +53,19 @@ Warnings:
 - a deletion without content of a forbidden or flagged file. Removing such material is allowed and reproduces nothing, but it is reported;
 - a modification that removes 500 or more upstream lines (the `-` lines reproduce them);
 - a new file with no `SPDX-License-Identifier` in its first 30 lines.
+
+## Reviewed flagged patches
+
+A patch that touches an EXP-004 flagged file passes `check` (and `export`) only if `patches/<series>/REVIEWED-FLAGGED.json` records its review:
+
+```json
+{"schema": "sstre-reviewed-flagged/1",
+ "reviews": [{"patch": "0013-<slug>.patch", "sha256": "<SHA-256 of the patch file>",
+              "paths": ["SamTFE/Sources/Entities/Player.es"], "reviewer": "lead",
+              "date": "2026-11-28", "rationale": "why the excerpt is acceptable"}]}
+```
+
+The entry covers only the listed paths and only the exact bytes of the patch file: any change to the patch (re-export with different content or context, a rebase that changes it) makes `check` fail with "changed since its review" until a reviewer updates the hash. Entries for patches that are no longer in the series are reported as stale. Malformed entries are errors.
 
 ## Typical workflow
 

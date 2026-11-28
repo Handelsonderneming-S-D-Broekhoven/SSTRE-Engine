@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import ast
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -49,6 +50,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
+import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -56,7 +58,9 @@ TOOL_ROOT = Path(__file__).resolve().parent.parent  # SSTRE-Engine root
 LOCK_NAME = "upstream.lock.json"
 ZERO_FROM = "From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001"
 PATCH_NAME = re.compile(r"^(\d{4})-[A-Za-z0-9._-]+\.patch$")
-SERIES_EXTRA_FILES = {"README.md", ".gitkeep"}
+REVIEW_FILE = "REVIEWED-FLAGGED.json"
+REVIEW_SCHEMA = "sstre-reviewed-flagged/1"
+SERIES_EXTRA_FILES = {"README.md", ".gitkeep", REVIEW_FILE}
 DEFAULT_MAX_PATCH_KIB = 1024
 LARGE_DELETION_LINES = 500
 # Identity used for the commits that ``git am`` creates in throw-away working
@@ -689,6 +693,8 @@ class CheckOptions:
     max_patch_kib: int = DEFAULT_MAX_PATCH_KIB
     forbidden_ext: set[str] = field(default_factory=lambda: set(FORBIDDEN_EXTENSIONS))
     forbidden_dirs: set[str] = field(default_factory=lambda: set(FORBIDDEN_DIR_PARTS))
+    # patch file name -> review entry from patches/<series>/REVIEWED-FLAGGED.json
+    reviews: dict[str, dict] = field(default_factory=dict)
 
 
 @dataclass
@@ -703,6 +709,8 @@ def check_patch_file(path: Path, opts: CheckOptions, rep: CheckReport, label: st
     label = label or path.as_posix()
     raw = path.read_bytes()
     rep.patches += 1
+    review = opts.reviews.get(path.name)
+    digest = hashlib.sha256(raw).hexdigest()
     err = lambda m: rep.errors.append(f"{label}: {m}")
     warn = lambda m: rep.warnings.append(f"{label}: {m}")
     if len(raw) > opts.max_patch_kib * 1024:
@@ -764,13 +772,20 @@ def check_patch_file(path: Path, opts: CheckOptions, rep: CheckReport, label: st
                     err(f"{p}: deleting a flagged file with its content reproduces it ({why})")
                 elif clean_delete:
                     warn(f"{p}: deletes a flagged file without content ({why})")
+                elif review is not None and p in review["paths"] and review["sha256"] == digest:
+                    warn(f"{p}: touches a flagged file ({why}); reviewed by {review['reviewer']} "
+                         f"on {review['date']} ({REVIEW_FILE}), {fc.context} context line(s)")
                 elif opts.allow_flagged:
                     hint = ("" if fc.context <= 1 else
                             "; prefer 1 line of context (export --flagged-context 1)")
                     warn(f"{p}: touches a flagged file ({why}); reviewed via --allow-flagged, "
                          f"{fc.context} context line(s){hint}")
+                elif review is not None and p in review["paths"]:
+                    err(f"{p}: touches a flagged file ({why}); the patch changed since its review "
+                        f"(sha256 {digest} != reviewed {review['sha256']}), needs re-review in {REVIEW_FILE}")
                 else:
-                    err(f"{p}: touches a flagged file ({why}); needs explicit review (--allow-flagged)")
+                    err(f"{p}: touches a flagged file ({why}); needs explicit review "
+                        f"(an entry in {REVIEW_FILE}, or --allow-flagged locally)")
         if fc.removed >= LARGE_DELETION_LINES:
             warn(f"{shown}: removes {fc.removed} upstream lines; the patch reproduces them "
                  "(check that this is not generated or third-party content)")
@@ -795,7 +810,44 @@ def find_series_dirs(root: Path, upstreams: list[Upstream] | None, rep: CheckRep
     return dirs
 
 
+def load_reviews(d: Path, rep: CheckReport, label: str) -> dict[str, dict]:
+    """Read patches/<series>/REVIEWED-FLAGGED.json: the per-patch record of a
+    reviewed change to EXP-004 flagged files. An entry passes a patch only while
+    the SHA-256 of the patch file is unchanged, so any change needs re-review."""
+    f = d / REVIEW_FILE
+    if not f.is_file():
+        return {}
+    where = f"{label}/{REVIEW_FILE}"
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        rep.errors.append(f"{where}: cannot read: {exc}")
+        return {}
+    if not isinstance(data, dict) or data.get("schema") != REVIEW_SCHEMA or not isinstance(data.get("reviews"), list):
+        rep.errors.append(f"{where}: expected {{\"schema\": \"{REVIEW_SCHEMA}\", \"reviews\": [...]}}")
+        return {}
+    out: dict[str, dict] = {}
+    for i, e in enumerate(data["reviews"]):
+        ok = (isinstance(e, dict) and isinstance(e.get("patch"), str) and PATCH_NAME.match(e["patch"])
+              and isinstance(e.get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", e["sha256"])
+              and isinstance(e.get("paths"), list) and e["paths"] and all(isinstance(x, str) for x in e["paths"])
+              and all(isinstance(e.get(k), str) and e[k].strip() for k in ("reviewer", "date", "rationale"))
+              and re.fullmatch(r"\d{4}-\d{2}-\d{2}", e.get("date") or ""))
+        if not ok:
+            rep.errors.append(f"{where}: reviews[{i}]: needs patch (NNNN-<slug>.patch), sha256 (64 hex), "
+                              "non-empty paths, reviewer, date (YYYY-MM-DD) and rationale")
+            continue
+        if e["patch"] in out:
+            rep.errors.append(f"{where}: reviews[{i}]: duplicate entry for {e['patch']}")
+            continue
+        if not (d / e["patch"]).is_file():
+            rep.warnings.append(f"{where}: reviews[{i}]: {e['patch']} is not in the series (stale entry)")
+        out[e["patch"]] = e
+    return out
+
+
 def check_series_dir(d: Path, opts: CheckOptions, rep: CheckReport, label: str) -> None:
+    opts = dataclasses.replace(opts, reviews=load_reviews(d, rep, label))
     nums = []
     for f in sorted(d.iterdir()):
         rel = f"{label}/{f.name}"
@@ -865,7 +917,8 @@ def cmd_check(args) -> int:
             if p.is_dir():
                 check_series_dir(p, opts, rep, p.as_posix())
             elif p.is_file():
-                check_patch_file(p, opts, rep)
+                check_patch_file(p, dataclasses.replace(opts, reviews=load_reviews(p.parent, rep, p.parent.as_posix())),
+                                 rep)
             else:
                 raise ToolError(f"{p}: no such file or directory")
         return print_report(rep, "given paths")
@@ -985,6 +1038,8 @@ def export_series(src: Path, up: Upstream, ref: str, dest: Path, unified: int,
                   opts: CheckOptions, rules: list[tuple[str, int, str]] | None = None
                   ) -> tuple[list[Path], CheckReport]:
     commits = series_commits(src, up, ref)
+    rep = CheckReport()
+    opts = dataclasses.replace(opts, reviews=load_reviews(dest, rep, up.patch_series))
     with tempfile.TemporaryDirectory(prefix="sstre-export-") as tmp:
         tmpd = Path(tmp) / up.name
         if commits:
@@ -993,7 +1048,6 @@ def export_series(src: Path, up: Upstream, ref: str, dest: Path, unified: int,
         produced = series_files(tmpd)
         if len(produced) != len(commits):
             raise ToolError(f"{up.name}: format-patch wrote {len(produced)} file(s) for {len(commits)} commit(s)")
-        rep = CheckReport()
         for p, c in zip(produced, commits):
             for what in apply_path_context(p, c, src, unified, rules or []):
                 rep.notes.append(f"{p.name}: {what}")
