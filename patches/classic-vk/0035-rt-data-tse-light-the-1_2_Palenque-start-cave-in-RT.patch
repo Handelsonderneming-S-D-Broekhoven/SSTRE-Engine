@@ -1,0 +1,68 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Sat, 28 Nov 2026 15:54:15 +0100
+Subject: [PATCH] rt(data,tse): light the 1_2_Palenque start cave in RT
+
+The 1_2_Palenque RT level start showed a black 3D view in the spawn cave
+(Vulkan fine). The cave is lit in SE1 only by invisible static light
+entities (3 bluish fill lights, torch glow lights at the temple door);
+RT ignores static spherical lights without a visible model
+(CustomInfo::IsSphericalLightIgnored), and no sun or sky light reaches
+the closed cave. Lowering tonemapping_min_log_luminance to -12 changed
+nothing.
+
+Whitelist the 25 static lights within 80 m of the spawn with
+cutscene_light (position match), found with a temporary debug listing.
+Data only; world coordinates, no texture paths.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ SamTSE/SSTRE/RT/WorldTuning.txt | 35 ++++++++++++++++++++++++++++++++-
+ 1 file changed, 34 insertions(+), 1 deletion(-)
+
+diff --git a/SamTSE/SSTRE/RT/WorldTuning.txt b/SamTSE/SSTRE/RT/WorldTuning.txt
+index c92ebda1ae5ae47bf7c0b5af31725a7beea039e0..044ef85b2b7cc056f97370f1bb22e04560591c0a 100644
+--- a/SamTSE/SSTRE/RT/WorldTuning.txt
++++ b/SamTSE/SSTRE/RT/WorldTuning.txt
+@@ -69,7 +69,40 @@ haze = 0                                  # was 1: made everything beyond ~20 m
+ sky_type = geometry
+ 
+ [world 1_2_Palenque]
+-tuned = 0    # placeholder: generic defaults from [defaults]
++# Observed 2026-11-28 (EXP-018 A3): the level starts in a closed cave that SE1 lights only with
++# invisible static light entities (3 bluish fill lights along the cave, torch glow lights at the
++# temple door). RT ignores static spherical lights without a visible model
++# (CustomInfo::IsSphericalLightIgnored), so the spawn was pitch black. cutscene_light whitelists
++# a static light by its position (Manhattan distance < 0.5); positions from a debug listing of
++# the ignored lights within 80 m of the spawn. Not play-tested beyond the cave [ASM].
++tuned = 0
++haze = 0
++sky_type = geometry
++cutscene_light = 692 25.25 1062.75
++cutscene_light = 648.25 24.25 1065
++cutscene_light = 669 22.5 1065.5
++cutscene_light = 637.75 19.8125 1063.69
++cutscene_light = 634.75 20.6875 1064
++cutscene_light = 620.25 22 1064.5
++cutscene_light = 631 21 1041
++cutscene_light = 632.25 20 1085.25
++cutscene_light = 625 45 1064.5
++cutscene_light = 628.25 19.625 1055.56
++cutscene_light = 629.375 19.875 1054.25
++cutscene_light = 628.062 20.0625 1054.12
++cutscene_light = 626.531 19.625 1054.12
++cutscene_light = 628.25 19.625 1072.44
++cutscene_light = 629.375 19.875 1073.75
++cutscene_light = 628.062 20.0625 1073.88
++cutscene_light = 626.531 19.625 1073.88
++cutscene_light = 631.75 23.375 1064.12
++cutscene_light = 626.312 22.375 1064.06
++cutscene_light = 632.375 21.6875 1058.88
++cutscene_light = 632.188 25.6875 1058.94
++cutscene_light = 631.875 22.25 1069.62
++cutscene_light = 631.625 26.625 1069.75
++cutscene_light = 624 5.5 1048.5
++cutscene_light = 620.5 4.5 1074
+ 
+ [world 1_3_Teotihuacan]
+ tuned = 0    # placeholder: generic defaults from [defaults]

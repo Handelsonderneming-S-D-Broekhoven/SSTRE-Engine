@@ -1,0 +1,54 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Sat, 28 Nov 2026 15:54:15 +0100
+Subject: [PATCH] rt(controls,tse): add the flashlight button to existing
+ control profiles
+
+Player control profiles (Controls\ControlsN.ctl) written before the RT
+flashlight existed lack its button, and SE1 never merges new default
+bindings into them, so key L did nothing for existing players (VS-E).
+CControls::Load_t now adds "Flashlight" when missing, bound to L unless
+another button already uses L (same pattern as the old commented-out
+Talk injection). The game saves it back on exit; idempotent.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ SamTSE/Sources/GameMP/Controls.cpp | 25 +++++++++++++++++++++++++
+ 1 file changed, 25 insertions(+)
+
+diff --git a/SamTSE/Sources/GameMP/Controls.cpp b/SamTSE/Sources/GameMP/Controls.cpp
+index c432e0b84ce2571ccc45a45a11fd2100889419a4..6d45957a848739054a2758ab6ac39e88a5d58feb 100644
+--- a/SamTSE/Sources/GameMP/Controls.cpp
++++ b/SamTSE/Sources/GameMP/Controls.cpp
+@@ -274,6 +274,31 @@ void CControls::Load_t( CTFileName fnFile)
+   }
+ 	while( !strmFile.AtEOF());
+ 
++  // SSTRE: player control profiles created before the RT flashlight existed lack its button
++  // (new default bindings are never merged into existing Controls\ControlsN.ctl files);
++  // add it, bound to L like Controls\00-Default.ctl if no other button uses L
++  {
++    BOOL bHasFlashlight = FALSE;
++    BOOL bHasL = FALSE;
++    FOREACHINLIST( CButtonAction, ba_lnNode, ctrl_lhButtonActions, itba) {
++      CButtonAction &ba = *itba;
++      if (ba.ba_strName=="Flashlight") {
++        bHasFlashlight = TRUE;
++      }
++      if (ba.ba_iFirstKey==KID_L || ba.ba_iSecondKey==KID_L) {
++        bHasL = TRUE;
++      }
++    }
++    if (!bHasFlashlight) {
++      CButtonAction &baNew = AddButtonAction();
++      baNew.ba_strName = "Flashlight";  // saved as "TTRS Flashlight" (translatable), as in 00-Default.ctl
++      baNew.ba_iFirstKey = bHasL ? KID_NONE : KID_L;
++      baNew.ba_iSecondKey = KID_NONE;
++      baNew.ba_strCommandLineWhenPressed = " ctl_bFlashlight = !ctl_bFlashlight;";
++      baNew.ba_strCommandLineWhenReleased = " ;";
++    }
++  }
++
+ /*
+   // search for talk button
+   BOOL bHasTalk = FALSE;
