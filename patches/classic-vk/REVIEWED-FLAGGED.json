@@ -1,0 +1,47 @@
+{
+  "schema": "sstre-reviewed-flagged/1",
+  "reviews": [
+    {
+      "patch": "0013-rt-entities-port-the-TFE-RT-entity-hooks-flashlight-.patch",
+      "sha256": "712ee10c23003e3de02872d8d4eebf229380992e9384608f5dce38d929502bd2",
+      "paths": [
+        "SamTFE/Sources/Entities/Common/HUD.cpp",
+        "SamTFE/Sources/Entities/Player.es",
+        "SamTFE/Sources/Entities/PlayerWeapons.es"
+      ],
+      "reviewer": "lead",
+      "date": "2026-11-28",
+      "rationale": "EXP-004 H6 (TFE Entities). Approved: the patch reproduces 16 context lines and 2 deleted lines of structural code only, exported with 1 line of context; the RT entity hooks (flashlight, HUD, first-person weapon render) are functionally necessary for the ray-tracing backend."
+    },
+    {
+      "patch": "0015-rt-menu-offer-Ray-Tracing-as-a-graphics-API-and-add-.patch",
+      "sha256": "516da7f93ab1d841795945ef3479f9ef0e2b91e7c898062cd0330c37db03d860",
+      "paths": [
+        "SamTFE/Scripts/Menu/RenderingOptions.cfg"
+      ],
+      "reviewer": "lead",
+      "date": "2026-11-28",
+      "rationale": "EXP-004 G4. Approved: the retail TFE RenderingOptions.cfg receives only a single Include: line (1 line of context); the RT gadgets moved to an SSTRE-authored file with SPDX header and Serious-Engine-RT attribution."
+    },
+    {
+      "patch": "0024-rt-menu-tse-offer-Ray-Tracing-as-a-graphics-API-in-t.patch",
+      "sha256": "e72b1c92c1ee004d082ef5ba2c804643816825b8e9ed5e230634bde3c94a6bdd",
+      "paths": [
+        "SamTSE/Scripts/Menu/RenderingOptions.cfg"
+      ],
+      "reviewer": "lead",
+      "date": "2026-11-28",
+      "rationale": "EXP-004 G4. Approved: the retail TSE RenderingOptions.cfg receives only a single Include: line (1 line of context); the RT gadgets moved to an SSTRE-authored file with SPDX header and Serious-Engine-RT attribution."
+    },
+    {
+      "patch": "0027-rt-controls-tse-bind-the-RT-flashlight-in-the-defaul.patch",
+      "sha256": "5acec5191111a0ddd616e85e8dafe37aa53c257ef6fed7370b5fc9c85b14e3ac",
+      "paths": [
+        "SamTSE/Controls/00-Default.ctl"
+      ],
+      "reviewer": "lead",
+      "date": "2026-11-28",
+      "rationale": "EXP-004 G4. Approved: the retail TSE 00-Default.ctl gets +6 lines (flashlight binding on L) with 5 context lines; the controls parser has no include mechanism."
+    }
+  ]
+}

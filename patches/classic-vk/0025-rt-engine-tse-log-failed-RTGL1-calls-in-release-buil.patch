@@ -1,0 +1,50 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Sat, 28 Nov 2026 00:45:03 +0100
+Subject: [PATCH] rt(engine,tse): log failed RTGL1 calls in release builds
+ (TSE)
+
+Replays 005bd78c onto SamTSE/Sources/Engine/Raytracing (applied cleanly).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ SamTSE/Sources/Engine/Raytracing/SSRT.cpp      | 9 +++++++++
+ SamTSE/Sources/Engine/Raytracing/SSRTObjects.h | 5 ++++-
+ 2 files changed, 13 insertions(+), 1 deletion(-)
+
+diff --git a/SamTSE/Sources/Engine/Raytracing/SSRT.cpp b/SamTSE/Sources/Engine/Raytracing/SSRT.cpp
+index 9c070db22524ba0af739074cda2dc73f0de66eff..5df73921297dbd69283775f82fc2fbdff63e3258 100644
+--- a/SamTSE/Sources/Engine/Raytracing/SSRT.cpp
++++ b/SamTSE/Sources/Engine/Raytracing/SSRT.cpp
+@@ -296,6 +296,15 @@ void SSRT::SSRTMain::NormalizeShellVariables()
+ }
+ 
+ 
++// SSTRE: rate-limited report of failed rg*() calls (see RG_CHECKERROR)
++void SSRT_ReportRgError(int iResult, const char *strFile, int iLine)
++{
++  static INDEX ctReported = 0;
++  if (ctReported >= 50) return;
++  ctReported++;
++  CPrintF("RTGL1 error %d (%s) at %s:%d\n", iResult, rgGetResultDescription((RgResult)iResult), strFile, iLine);
++}
++
+ static void DebugPrint(const char *pMessage, void *pUserData)
+ {
+   CPrintF(pMessage);
+diff --git a/SamTSE/Sources/Engine/Raytracing/SSRTObjects.h b/SamTSE/Sources/Engine/Raytracing/SSRTObjects.h
+index 8f98d8faeec312b9f9c64e6598bd052e5d026b8b..9980b20ffaaa385af426061cdf27c64f2e3a900c 100644
+--- a/SamTSE/Sources/Engine/Raytracing/SSRTObjects.h
++++ b/SamTSE/Sources/Engine/Raytracing/SSRTObjects.h
+@@ -19,7 +19,10 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #include <Engine/Brushes/Brush.h>
+ #include <RTGL1/RTGL1.h>
+ 
+-#define RG_CHECKERROR(x) ASSERT(x == RG_SUCCESS)
++// SSTRE: in release builds, report RTGL1 failures to the console (rate-limited) instead of
++// dropping them; debug builds still assert
++void SSRT_ReportRgError(int iResult, const char *strFile, int iLine);
++#define RG_CHECKERROR(x) do { if ((x) != RG_SUCCESS) { SSRT_ReportRgError((int)(x), __FILE__, __LINE__); ASSERT((x) == RG_SUCCESS); } } while (0)
+ 
+ class CRenderModel;
+ 

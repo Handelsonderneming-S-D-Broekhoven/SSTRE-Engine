@@ -40,6 +40,7 @@ from __future__ import annotations
 import argparse
 import ast
 import fnmatch
+import hashlib
 import json
 import os
 import re
@@ -49,6 +50,7 @@ import subprocess
 import sys
 import tempfile
 import urllib.request
+import dataclasses
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -56,7 +58,9 @@ TOOL_ROOT = Path(__file__).resolve().parent.parent  # SSTRE-Engine root
 LOCK_NAME = "upstream.lock.json"
 ZERO_FROM = "From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001"
 PATCH_NAME = re.compile(r"^(\d{4})-[A-Za-z0-9._-]+\.patch$")
-SERIES_EXTRA_FILES = {"README.md", ".gitkeep"}
+REVIEW_FILE = "REVIEWED-FLAGGED.json"
+REVIEW_SCHEMA = "sstre-reviewed-flagged/1"
+SERIES_EXTRA_FILES = {"README.md", ".gitkeep", REVIEW_FILE}
 DEFAULT_MAX_PATCH_KIB = 1024
 LARGE_DELETION_LINES = 500
 # Identity used for the commits that ``git am`` creates in throw-away working
@@ -491,6 +495,7 @@ class FileChange:
     added: list[str] = field(default_factory=list)
     removed: int = 0
     full_index: bool = True
+    context: int = 0              # largest leading/trailing context run of any hunk
 
     def paths(self) -> list[str]:
         return sorted({p for p in (self.old, self.new) if p})
@@ -574,9 +579,18 @@ def parse_patch(raw: bytes) -> ParsedPatch:
     cur: FileChange | None = None
     in_hunk = False
     signature = False
+    hunk = {"lead": None, "run": 0}   # context-run bookkeeping of the open hunk
+
+    def end_hunk() -> None:
+        if cur is not None and in_hunk:
+            lead = hunk["run"] if hunk["lead"] is None else hunk["lead"]
+            cur.context = max(cur.context, lead, hunk["run"])
+        hunk.update(lead=None, run=0)
+
     for j in range(i, len(lines)):
         ln = lines[j]
         if ln.startswith("diff --git "):
+            end_hunk()
             a, b = _diff_git_paths(ln[len("diff --git "):])
             cur = FileChange(a, b)
             files.append(cur)
@@ -584,19 +598,27 @@ def parse_patch(raw: bytes) -> ParsedPatch:
             continue
         if ln.rstrip("\r") == "-- " and j + 1 < len(lines) and re.match(r"^\d+\.\d+", lines[j + 1]):
             signature = True
+            end_hunk()
             cur = None
             continue
         if cur is None:
             continue
         if in_hunk:
-            if ln.startswith("+"):
-                cur.added.append(ln[1:])
+            if ln.startswith(("+", "-")):
+                if ln.startswith("+"):
+                    cur.added.append(ln[1:])
+                else:
+                    cur.removed += 1
+                if hunk["lead"] is None:
+                    hunk["lead"] = hunk["run"]
+                hunk["run"] = 0
                 continue
-            if ln.startswith("-"):
-                cur.removed += 1
+            if ln.startswith(" "):
+                hunk["run"] += 1
                 continue
-            if ln.startswith(" ") or ln.startswith("\\") or ln == "":
+            if ln.startswith("\\") or ln == "":
                 continue
+            end_hunk()
             in_hunk = False
         if ln.startswith("@@"):
             in_hunk = True
@@ -630,6 +652,7 @@ def parse_patch(raw: bytes) -> ParsedPatch:
             p = _strip_prefix(ln[4:])
             if cur.kind != "delete":
                 cur.new = p if p is not None else cur.new
+    end_hunk()
     return ParsedPatch(from_line, headers, message, files, signature, b"\0" in raw)
 
 
@@ -670,12 +693,15 @@ class CheckOptions:
     max_patch_kib: int = DEFAULT_MAX_PATCH_KIB
     forbidden_ext: set[str] = field(default_factory=lambda: set(FORBIDDEN_EXTENSIONS))
     forbidden_dirs: set[str] = field(default_factory=lambda: set(FORBIDDEN_DIR_PARTS))
+    # patch file name -> review entry from patches/<series>/REVIEWED-FLAGGED.json
+    reviews: dict[str, dict] = field(default_factory=dict)
 
 
 @dataclass
 class CheckReport:
     errors: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
     patches: int = 0
 
 
@@ -683,6 +709,8 @@ def check_patch_file(path: Path, opts: CheckOptions, rep: CheckReport, label: st
     label = label or path.as_posix()
     raw = path.read_bytes()
     rep.patches += 1
+    review = opts.reviews.get(path.name)
+    digest = hashlib.sha256(raw).hexdigest()
     err = lambda m: rep.errors.append(f"{label}: {m}")
     warn = lambda m: rep.warnings.append(f"{label}: {m}")
     if len(raw) > opts.max_patch_kib * 1024:
@@ -744,11 +772,20 @@ def check_patch_file(path: Path, opts: CheckOptions, rep: CheckReport, label: st
                     err(f"{p}: deleting a flagged file with its content reproduces it ({why})")
                 elif clean_delete:
                     warn(f"{p}: deletes a flagged file without content ({why})")
+                elif review is not None and p in review["paths"] and review["sha256"] == digest:
+                    warn(f"{p}: touches a flagged file ({why}); reviewed by {review['reviewer']} "
+                         f"on {review['date']} ({REVIEW_FILE}), {fc.context} context line(s)")
                 elif opts.allow_flagged:
-                    warn(f"{p}: touches a flagged file ({why}); reviewed via --allow-flagged. "
-                         "Prefer --unified=1 context for such files")
+                    hint = ("" if fc.context <= 1 else
+                            "; prefer 1 line of context (export --flagged-context 1)")
+                    warn(f"{p}: touches a flagged file ({why}); reviewed via --allow-flagged, "
+                         f"{fc.context} context line(s){hint}")
+                elif review is not None and p in review["paths"]:
+                    err(f"{p}: touches a flagged file ({why}); the patch changed since its review "
+                        f"(sha256 {digest} != reviewed {review['sha256']}), needs re-review in {REVIEW_FILE}")
                 else:
-                    err(f"{p}: touches a flagged file ({why}); needs explicit review (--allow-flagged)")
+                    err(f"{p}: touches a flagged file ({why}); needs explicit review "
+                        f"(an entry in {REVIEW_FILE}, or --allow-flagged locally)")
         if fc.removed >= LARGE_DELETION_LINES:
             warn(f"{shown}: removes {fc.removed} upstream lines; the patch reproduces them "
                  "(check that this is not generated or third-party content)")
@@ -773,7 +810,44 @@ def find_series_dirs(root: Path, upstreams: list[Upstream] | None, rep: CheckRep
     return dirs
 
 
+def load_reviews(d: Path, rep: CheckReport, label: str) -> dict[str, dict]:
+    """Read patches/<series>/REVIEWED-FLAGGED.json: the per-patch record of a
+    reviewed change to EXP-004 flagged files. An entry passes a patch only while
+    the SHA-256 of the patch file is unchanged, so any change needs re-review."""
+    f = d / REVIEW_FILE
+    if not f.is_file():
+        return {}
+    where = f"{label}/{REVIEW_FILE}"
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        rep.errors.append(f"{where}: cannot read: {exc}")
+        return {}
+    if not isinstance(data, dict) or data.get("schema") != REVIEW_SCHEMA or not isinstance(data.get("reviews"), list):
+        rep.errors.append(f"{where}: expected {{\"schema\": \"{REVIEW_SCHEMA}\", \"reviews\": [...]}}")
+        return {}
+    out: dict[str, dict] = {}
+    for i, e in enumerate(data["reviews"]):
+        ok = (isinstance(e, dict) and isinstance(e.get("patch"), str) and PATCH_NAME.match(e["patch"])
+              and isinstance(e.get("sha256"), str) and re.fullmatch(r"[0-9a-f]{64}", e["sha256"])
+              and isinstance(e.get("paths"), list) and e["paths"] and all(isinstance(x, str) for x in e["paths"])
+              and all(isinstance(e.get(k), str) and e[k].strip() for k in ("reviewer", "date", "rationale"))
+              and re.fullmatch(r"\d{4}-\d{2}-\d{2}", e.get("date") or ""))
+        if not ok:
+            rep.errors.append(f"{where}: reviews[{i}]: needs patch (NNNN-<slug>.patch), sha256 (64 hex), "
+                              "non-empty paths, reviewer, date (YYYY-MM-DD) and rationale")
+            continue
+        if e["patch"] in out:
+            rep.errors.append(f"{where}: reviews[{i}]: duplicate entry for {e['patch']}")
+            continue
+        if not (d / e["patch"]).is_file():
+            rep.warnings.append(f"{where}: reviews[{i}]: {e['patch']} is not in the series (stale entry)")
+        out[e["patch"]] = e
+    return out
+
+
 def check_series_dir(d: Path, opts: CheckOptions, rep: CheckReport, label: str) -> None:
+    opts = dataclasses.replace(opts, reviews=load_reviews(d, rep, label))
     nums = []
     for f in sorted(d.iterdir()):
         rel = f"{label}/{f.name}"
@@ -824,6 +898,8 @@ def options_from_args(args) -> CheckOptions:
 
 
 def print_report(rep: CheckReport, what: str) -> int:
+    for n in rep.notes:
+        print(f"note: {n}")
     for w in rep.warnings:
         print(f"WARNING: {w}")
     for e in rep.errors:
@@ -841,7 +917,8 @@ def cmd_check(args) -> int:
             if p.is_dir():
                 check_series_dir(p, opts, rep, p.as_posix())
             elif p.is_file():
-                check_patch_file(p, opts, rep)
+                check_patch_file(p, dataclasses.replace(opts, reviews=load_reviews(p.parent, rep, p.parent.as_posix())),
+                                 rep)
             else:
                 raise ToolError(f"{p}: no such file or directory")
         return print_report(rep, "given paths")
@@ -884,9 +961,85 @@ def series_commits(src: Path, up: Upstream, ref: str) -> list[str]:
     return commits
 
 
+def parse_context_rules(specs: list[str] | None, flagged: int | None) -> list[tuple[str, int, str]]:
+    """``--path-context GLOB=N`` rules (first match wins) followed by the
+    ``--flagged-context N`` rule for every EXP-004 flagged path."""
+    rules = []
+    for spec in specs or []:
+        glob, sep, n = spec.rpartition("=")
+        if not sep or not glob or not n.isdigit() or int(n) < 1:
+            raise ToolError(f"--path-context {spec!r}: expected GLOB=N with N >= 1")
+        rules.append((glob, int(n), f"--path-context {spec}"))
+    if flagged is not None:
+        if flagged < 1:
+            raise ToolError("--flagged-context must be >= 1 (git am cannot apply zero-context patches)")
+        rules.extend((pat, flagged, f"flagged: {why}") for pat, why in FLAGGED_PATHS)
+    return rules
+
+
+def _context_for(paths: list[str], rules: list[tuple[str, int, str]]) -> int | None:
+    for glob, n, why in rules:
+        if any(_match_any(p, [(glob, why)]) for p in paths):
+            return n
+    return None
+
+
+def _split_sections(raw: bytes) -> tuple[bytes, list[bytes]]:
+    """Split a format-patch file (exported with --no-signature) into the part
+    before the first ``diff --git`` line and one chunk per file section."""
+    lines = raw.splitlines(keepends=True)
+    starts = [k for k, ln in enumerate(lines) if ln.startswith(b"diff --git ")]
+    if not starts:
+        return raw, []
+    head = b"".join(lines[:starts[0]])
+    bounds = starts + [len(lines)]
+    return head, [b"".join(lines[bounds[k]:bounds[k + 1]]) for k in range(len(starts))]
+
+
+def _section_diff(src: Path, commit: str, paths: list[str], unified: int) -> bytes:
+    """One commit's diff for ``paths``, with the same diff options as the export."""
+    return git(["diff-tree", "-p", "--no-commit-id", "--full-index", "--binary",
+                "--find-renames", "--diff-algorithm=myers", "--irreversible-delete",
+                "--no-ext-diff", "--no-relative", "--src-prefix=a/", "--dst-prefix=b/",
+                f"--unified={unified}", f"{commit}^", commit, "--", *paths],
+               src, text=False).stdout
+
+
+def apply_path_context(patch: Path, commit: str, src: Path, unified: int,
+                       rules: list[tuple[str, int, str]]) -> list[str]:
+    """Re-generate the file sections of ``patch`` whose path matches a context
+    rule with that rule's number of context lines (ADR-0008 item 4: minimal
+    context for EXP-004 flagged files). The commit message, the diffstat and
+    all other sections are kept byte for byte. As a safety net, each section is
+    first re-generated with the export's default context and must reproduce
+    the format-patch output exactly. Returns the rewritten paths."""
+    if not rules:
+        return []
+    head, sections = _split_sections(patch.read_bytes())
+    changed, out = [], []
+    for sec in sections:
+        fc = parse_patch(ZERO_FROM.encode() + b"\n\n" + sec).files[0]
+        n = _context_for(fc.paths(), rules)
+        if n is None or n == unified or fc.kind in ("add", "delete") or fc.binary:
+            out.append(sec)   # additions/deletions carry no upstream context lines
+            continue
+        paths = fc.paths()
+        if _section_diff(src, commit, paths, unified) != sec:
+            raise ToolError(f"{patch.name}: cannot re-generate the section for {' -> '.join(paths)} "
+                            "identically; refusing to change its context")
+        out.append(_section_diff(src, commit, paths, n))
+        changed.append(f"{' -> '.join(paths)} (context {n})")
+    if changed:
+        patch.write_bytes(head + b"".join(out))
+    return changed
+
+
 def export_series(src: Path, up: Upstream, ref: str, dest: Path, unified: int,
-                  opts: CheckOptions) -> tuple[list[Path], CheckReport]:
+                  opts: CheckOptions, rules: list[tuple[str, int, str]] | None = None
+                  ) -> tuple[list[Path], CheckReport]:
     commits = series_commits(src, up, ref)
+    rep = CheckReport()
+    opts = dataclasses.replace(opts, reviews=load_reviews(dest, rep, up.patch_series))
     with tempfile.TemporaryDirectory(prefix="sstre-export-") as tmp:
         tmpd = Path(tmp) / up.name
         if commits:
@@ -895,8 +1048,9 @@ def export_series(src: Path, up: Upstream, ref: str, dest: Path, unified: int,
         produced = series_files(tmpd)
         if len(produced) != len(commits):
             raise ToolError(f"{up.name}: format-patch wrote {len(produced)} file(s) for {len(commits)} commit(s)")
-        rep = CheckReport()
         for p, c in zip(produced, commits):
+            for what in apply_path_context(p, c, src, unified, rules or []):
+                rep.notes.append(f"{p.name}: {what}")
             # the patch message must not carry any trailer the commit does not have
             commit_trailers = message_trailers(git_out(["log", "-1", "--format=%B", c], src).split("\n"))
             pp = parse_patch(p.read_bytes())
@@ -947,7 +1101,8 @@ def cmd_export(args) -> int:
     (up,) = select(load_lock(root), [args.name])
     src = (args.source_repo or root).resolve()
     opts = options_from_args(args)
-    written, rep = export_series(src, up, args.from_ref, up.series_dir(root), args.unified, opts)
+    rules = parse_context_rules(args.path_context, args.flagged_context)
+    written, rep = export_series(src, up, args.from_ref, up.series_dir(root), args.unified, opts, rules)
     rc = print_report(rep, f"export {up.name}")
     if rc:
         print(f"export {up.name}: aborted, {up.patch_series} left unchanged")
@@ -1025,6 +1180,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--from", dest="from_ref", required=True, help="local branch or commit (series tip)")
     p.add_argument("--source-repo", type=Path, help="repository holding the branch (default: --root)")
     p.add_argument("--unified", type=int, default=3, help="context lines (default 3)")
+    p.add_argument("--path-context", action="append", metavar="GLOB=N",
+                   help="use N context lines for files matching GLOB (case-insensitive, matched like "
+                        "the check rules); repeatable, first match wins")
+    p.add_argument("--flagged-context", type=int, default=1, metavar="N",
+                   help="context lines for files flagged by EXP-004 (ADR-0008 item 4; default %(default)s; "
+                        "pass the --unified value to disable)")
     p.add_argument("--verify", action="store_true", help="run the round trip after exporting")
     check_flags(p)
     p.set_defaults(func=cmd_export)

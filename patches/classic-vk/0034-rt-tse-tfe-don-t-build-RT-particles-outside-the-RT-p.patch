@@ -1,0 +1,157 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Sat, 28 Nov 2026 14:06:44 +0100
+Subject: [PATCH] rt(tse,tfe): don't build RT particles outside the RT particle
+ pass
+
+TSE 1_2_Palenque demo 1 under RT crashed with an access violation in
+Engine.dll (RVA 0x1922d8 = RT_GetViewVectors, Windows event 1000) at the
+moment the player used the chainsaw.
+
+Cause: the TSE-only first-person chainsaw particles are rendered from the
+HUD pass (Player.es RenderHUD: Particle_PrepareSystem/PrepareEntity(this)/
+RenderChainsawParticles). Under GAT_RT, Particle_RenderSquare goes to
+RT_Particle_RenderSquare, and RT_GetViewVectors checked only
+_Particle_penCurrentViewer (set) before dereferencing RT_sCurrentScene,
+which is only set inside RT_AddParticlesForEntity and was null.
+
+Fix: RT_GetViewVectors also requires RT_sCurrentScene, and
+RT_Particle_RenderSquare/RenderLine/RenderQuad3D return early without a
+scene; such particles were never flushed anyway (RT_Particle_Flush
+already requires the scene), so the visible output is unchanged.
+First-person chainsaw particles are not shown in RT (known limitation).
+
+Same code in the TFE tree (file was identical; TFE has no chainsaw).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ .../Sources/Engine/Raytracing/RTParticles.cpp | 31 ++++++++++++++++---
+ .../Sources/Engine/Raytracing/RTParticles.cpp | 31 ++++++++++++++++---
+ 2 files changed, 54 insertions(+), 8 deletions(-)
+
+diff --git a/SamTFE/Sources/Engine/Raytracing/RTParticles.cpp b/SamTFE/Sources/Engine/Raytracing/RTParticles.cpp
+index 93e568bee4abab479c6bffa886c7883ecc8603e2..af0dbc978dfb5724fe661623d1ad9965e75228ff 100644
+--- a/SamTFE/Sources/Engine/Raytracing/RTParticles.cpp
++++ b/SamTFE/Sources/Engine/Raytracing/RTParticles.cpp
+@@ -236,7 +236,9 @@ static FLOAT3D RT_GetViewDirection()
+ 
+ static void RT_GetViewVectors(FLOAT3D &x, FLOAT3D &y, ANGLE additionalBanking = 0)
+ {
+-  if (_Particle_penCurrentViewer != nullptr)
++  // SSTRE: the camera comes from the scene, so check the scene, not only the viewer
++  // (particles can be rendered outside of RT_AddParticlesForEntity, e.g. TSE chainsaw particles in the HUD pass)
++  if (_Particle_penCurrentViewer != nullptr && RT_sCurrentScene != nullptr)
+   {
+     const FLOATmatrix3D &m = RT_sCurrentScene->GetCameraRotation();
+ 
+@@ -264,7 +266,14 @@ static void RT_GetViewVectors(FLOAT3D &x, FLOAT3D &y, ANGLE additionalBanking =
+ 
+ 
+ void RT_Particle_RenderSquare(const FLOAT3D &vPos, FLOAT fSize, ANGLE aRotation, COLOR col, FLOAT fYRatio)
+-{  
++{
++  // SSTRE: only particles of RT_AddParticlesForEntity can be submitted;
++  // others (e.g. first-person particles from a HUD pass) would never be flushed
++  if (RT_sCurrentScene == nullptr)
++  {
++    return;
++  }
++  
+   // trivial rejection
+   if (fSize < 0.0001f || ((col & CT_AMASK) >> CT_ASHIFT) < 2)
+   {
+@@ -309,7 +318,14 @@ void RT_Particle_RenderSquare(const FLOAT3D &vPos, FLOAT fSize, ANGLE aRotation,
+ 
+ 
+ void RT_Particle_RenderLine(const FLOAT3D &a, const FLOAT3D &b, FLOAT width, COLOR col)
+-{  
++{
++  // SSTRE: only particles of RT_AddParticlesForEntity can be submitted;
++  // others (e.g. first-person particles from a HUD pass) would never be flushed
++  if (RT_sCurrentScene == nullptr)
++  {
++    return;
++  }
++  
+   // trivial rejection
+   if (width < 0 || ((col & CT_AMASK) >> CT_ASHIFT) < 2)
+   {
+@@ -356,7 +372,14 @@ void RT_Particle_RenderLine(const FLOAT3D &a, const FLOAT3D &b, FLOAT width, COL
+ 
+ 
+ void RT_Particle_RenderQuad3D(const FLOAT3D &vPos0, const FLOAT3D &vPos1, const FLOAT3D &vPos2, const FLOAT3D &vPos3, COLOR col)
+-{ 
++{
++  // SSTRE: only particles of RT_AddParticlesForEntity can be submitted;
++  // others (e.g. first-person particles from a HUD pass) would never be flushed
++  if (RT_sCurrentScene == nullptr)
++  {
++    return;
++  }
++ 
+   // trivial rejection
+   if (((col & CT_AMASK) >> CT_ASHIFT) < 2)
+   {
+diff --git a/SamTSE/Sources/Engine/Raytracing/RTParticles.cpp b/SamTSE/Sources/Engine/Raytracing/RTParticles.cpp
+index 93e568bee4abab479c6bffa886c7883ecc8603e2..af0dbc978dfb5724fe661623d1ad9965e75228ff 100644
+--- a/SamTSE/Sources/Engine/Raytracing/RTParticles.cpp
++++ b/SamTSE/Sources/Engine/Raytracing/RTParticles.cpp
+@@ -236,7 +236,9 @@ static FLOAT3D RT_GetViewDirection()
+ 
+ static void RT_GetViewVectors(FLOAT3D &x, FLOAT3D &y, ANGLE additionalBanking = 0)
+ {
+-  if (_Particle_penCurrentViewer != nullptr)
++  // SSTRE: the camera comes from the scene, so check the scene, not only the viewer
++  // (particles can be rendered outside of RT_AddParticlesForEntity, e.g. TSE chainsaw particles in the HUD pass)
++  if (_Particle_penCurrentViewer != nullptr && RT_sCurrentScene != nullptr)
+   {
+     const FLOATmatrix3D &m = RT_sCurrentScene->GetCameraRotation();
+ 
+@@ -264,7 +266,14 @@ static void RT_GetViewVectors(FLOAT3D &x, FLOAT3D &y, ANGLE additionalBanking =
+ 
+ 
+ void RT_Particle_RenderSquare(const FLOAT3D &vPos, FLOAT fSize, ANGLE aRotation, COLOR col, FLOAT fYRatio)
+-{  
++{
++  // SSTRE: only particles of RT_AddParticlesForEntity can be submitted;
++  // others (e.g. first-person particles from a HUD pass) would never be flushed
++  if (RT_sCurrentScene == nullptr)
++  {
++    return;
++  }
++  
+   // trivial rejection
+   if (fSize < 0.0001f || ((col & CT_AMASK) >> CT_ASHIFT) < 2)
+   {
+@@ -309,7 +318,14 @@ void RT_Particle_RenderSquare(const FLOAT3D &vPos, FLOAT fSize, ANGLE aRotation,
+ 
+ 
+ void RT_Particle_RenderLine(const FLOAT3D &a, const FLOAT3D &b, FLOAT width, COLOR col)
+-{  
++{
++  // SSTRE: only particles of RT_AddParticlesForEntity can be submitted;
++  // others (e.g. first-person particles from a HUD pass) would never be flushed
++  if (RT_sCurrentScene == nullptr)
++  {
++    return;
++  }
++  
+   // trivial rejection
+   if (width < 0 || ((col & CT_AMASK) >> CT_ASHIFT) < 2)
+   {
+@@ -356,7 +372,14 @@ void RT_Particle_RenderLine(const FLOAT3D &a, const FLOAT3D &b, FLOAT width, COL
+ 
+ 
+ void RT_Particle_RenderQuad3D(const FLOAT3D &vPos0, const FLOAT3D &vPos1, const FLOAT3D &vPos2, const FLOAT3D &vPos3, COLOR col)
+-{ 
++{
++  // SSTRE: only particles of RT_AddParticlesForEntity can be submitted;
++  // others (e.g. first-person particles from a HUD pass) would never be flushed
++  if (RT_sCurrentScene == nullptr)
++  {
++    return;
++  }
++ 
+   // trivial rejection
+   if (((col & CT_AMASK) >> CT_ASHIFT) < 2)
+   {

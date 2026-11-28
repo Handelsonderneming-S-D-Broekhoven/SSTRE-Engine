@@ -10,6 +10,7 @@ the forbidden lists with the umbrella validator.
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import io
 import json
 import os
@@ -172,6 +173,48 @@ class TestCheck(Base):
                 rep = self.check(d, allow_flagged=True)
                 self.assertEqual(rep.errors, [])
                 self.assertTrue(any("flagged" in w for w in rep.warnings))
+
+    def _review(self, d: Path, **over) -> dict:
+        entry = {"patch": "0001-x.patch",
+                 "sha256": hashlib.sha256((d / "0001-x.patch").read_bytes()).hexdigest(),
+                 "paths": ["SamTFE/Sources/Entities/Player.es"], "reviewer": "lead",
+                 "date": "2026-11-28", "rationale": "1-line context, structural code only"}
+        entry.update(over)
+        (d / sp.REVIEW_FILE).write_text(json.dumps({"schema": sp.REVIEW_SCHEMA, "reviews": [entry]}),
+                                        encoding="utf-8")
+        return entry
+
+    def test_review_list_passes_only_the_reviewed_bytes(self):
+        d = self.patch(self.diff("SamTFE/Sources/Entities/Player.es"))
+        self._review(d)
+        rep = self.check(d)                                   # no --allow-flagged
+        self.assertEqual(rep.errors, [])
+        self.assertTrue(any("reviewed by lead on 2026-11-28" in w for w in rep.warnings), rep.warnings)
+        # any change to the patch file needs a new review
+        p = d / "0001-x.patch"
+        p.write_bytes(p.read_bytes().replace(b"+b\n", b"+c\n"))
+        rep = self.check(d)
+        self.assertTrue(any("changed since its review" in e for e in rep.errors), rep.errors)
+        # a review covers only the listed paths
+        self._review(d, paths=["SamTFE/Sources/Entities/Other.es"])
+        rep = self.check(d)
+        self.assertTrue(any("needs explicit review" in e for e in rep.errors), rep.errors)
+
+    def test_review_list_format_errors_and_stale_entries(self):
+        d = self.patch(self.diff("src/main.c"))
+        self._review(d, patch="0002-gone.patch")
+        rep = self.check(d)
+        self.assertEqual(rep.errors, [])
+        self.assertTrue(any("stale entry" in w for w in rep.warnings), rep.warnings)
+        for bad in ({"sha256": "abc"}, {"reviewer": ""}, {"date": "28.11.2026"}, {"paths": []},
+                    {"patch": "x.patch"}):
+            with self.subTest(bad=bad):
+                self._review(d, **bad)
+                self.assertTrue(any("reviews[0]" in e for e in self.check(d).errors))
+        (d / sp.REVIEW_FILE).write_text("{not json", encoding="utf-8")
+        self.assertTrue(any("cannot read" in e for e in self.check(d).errors))
+        (d / sp.REVIEW_FILE).write_text(json.dumps({"reviews": []}), encoding="utf-8")
+        self.assertTrue(any("expected" in e for e in self.check(d).errors))
 
     def test_entities_mp_not_flagged(self):
         rep = self.check(self.patch(self.diff("SamTSE/Sources/EntitiesMP/Player.es")))
@@ -458,6 +501,90 @@ class TestRoundTrip(Base):
                             "--from", self.branch, "--source-repo", str(self.up),
                             "--allow-signoff", "--allow-flagged", "--verify")
         self.assertEqual(rc, 0, out)
+
+    def _flagged_series(self):
+        """Two commits; the second changes the middle line of an 11-line flagged
+        file and of an 11-line ordinary file."""
+        ten = [f"line {k}" for k in range(1, 12)]
+        write(self.up, "Sources/Entities/Enemy.es", "\n".join(["enemy"] + ten[1:]) + "\n")
+        write(self.up, "src/long.c", "\n".join(ten) + "\n")
+        commit(self.up, "prepare long files")
+        ten[5] = "line 6 changed"
+        write(self.up, "Sources/Entities/Enemy.es", "\n".join(["enemy"] + ten[1:]) + "\n")
+        write(self.up, "src/long.c", "\n".join(ten) + "\n")
+        commit(self.up, "change line 6")
+
+    @staticmethod
+    def _contexts(patch: bytes) -> dict[str, int]:
+        return {fc.paths()[0]: fc.context for fc in sp.parse_patch(patch).files}
+
+    def test_flagged_files_get_minimal_context(self):
+        self.assertEqual(self.fetch()[0], 0)
+        self._flagged_series()
+        base = ["--root", str(self.root), "--cache", str(self.cache), "export", "eng",
+                "--from", self.branch, "--source-repo", str(self.up), "--allow-flagged"]
+        rc, out = self.main(*base, "--verify")                       # default --flagged-context 1
+        self.assertEqual(rc, 0, out)
+        self.assertIn("round trip ok", out)
+        self.assertIn("Sources/Entities/Enemy.es (context 1)", out)
+        last_path = sorted((self.root / "patches/eng").iterdir())[-1]
+        last = last_path.read_bytes()
+        self.assertEqual(self._contexts(last), {"Sources/Entities/Enemy.es": 1, "src/long.c": 3})
+        self.assertIn(b" src/long.c", last)                           # diffstat kept
+        rep = sp.CheckReport()
+        sp.check_patch_file(last_path, sp.CheckOptions(allow_flagged=True), rep)
+        self.assertTrue(any("1 context line(s)" in w for w in rep.warnings), rep.warnings)
+        # --flagged-context 3 (= --unified) disables the rule; check then hints at minimal context
+        rc, out = self.main(*base, "--flagged-context", "3", "--verify")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("prefer 1 line of context", out)
+        last = sorted((self.root / "patches/eng").iterdir())[-1].read_bytes()
+        self.assertEqual(self._contexts(last)["Sources/Entities/Enemy.es"], 3)
+
+    def test_path_context_rule(self):
+        self.assertEqual(self.fetch()[0], 0)
+        self._flagged_series()
+        rc, out = self.main("--root", str(self.root), "--cache", str(self.cache), "export", "eng",
+                            "--from", self.branch, "--source-repo", str(self.up), "--allow-flagged",
+                            "--path-context", "src/*.c=2", "--verify")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("round trip ok", out)
+        last = sorted((self.root / "patches/eng").iterdir())[-1].read_bytes()
+        self.assertEqual(self._contexts(last), {"Sources/Entities/Enemy.es": 1, "src/long.c": 2})
+        for bad in ("src/*.c", "=2", "src/*.c=0", "src/*.c=x"):
+            rc, out = self.main("--root", str(self.root), "export", "eng", "--from", self.branch,
+                                "--source-repo", str(self.up), "--path-context", bad)
+            self.assertEqual(rc, 2, (bad, out))
+        rc, out = self.main("--root", str(self.root), "export", "eng", "--from", self.branch,
+                            "--source-repo", str(self.up), "--flagged-context", "0")
+        self.assertEqual(rc, 2, out)
+
+    def test_export_and_check_with_review_list(self):
+        self.assertEqual(self.fetch()[0], 0)
+        self._flagged_series()
+        base = ["--root", str(self.root), "--cache", str(self.cache), "export", "eng",
+                "--from", self.branch, "--source-repo", str(self.up)]
+        self.assertEqual(self.main(*base)[0], 1)              # flagged, not reviewed
+        self.assertEqual(self.main(*base, "--allow-flagged")[0], 0)
+        sdir = self.root / "patches/eng"
+        reviews = [{"patch": p.name, "sha256": hashlib.sha256(p.read_bytes()).hexdigest(),
+                    "paths": ["Sources/Entities/Enemy.es"], "reviewer": "lead", "date": "2026-11-28",
+                    "rationale": "test"} for p in sp.series_files(sdir)[-2:]]
+        (sdir / sp.REVIEW_FILE).write_text(json.dumps({"schema": sp.REVIEW_SCHEMA, "reviews": reviews}),
+                                           encoding="utf-8")
+        rc, out = self.main("--root", str(self.root), "check")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("reviewed by lead", out)
+        rc, out = self.main(*base, "--verify")                # re-export keeps the review list
+        self.assertEqual(rc, 0, out)
+        self.assertIn("round trip ok", out)
+        self.assertTrue((sdir / sp.REVIEW_FILE).is_file())
+        # a changed flagged patch is refused until it is reviewed again
+        write(self.up, "Sources/Entities/Enemy.es", "enemy\nchanged again\n")
+        run_git(self.up, "commit", "-q", "--amend", "-a", "--no-edit")
+        rc, out = self.main(*base)
+        self.assertEqual(rc, 1, out)
+        self.assertIn("changed since its review", out)
 
     def test_check_cli_on_series_and_unknown_dir(self):
         self.assertEqual(self.fetch()[0], 0)

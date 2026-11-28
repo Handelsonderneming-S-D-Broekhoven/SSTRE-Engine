@@ -1,0 +1,383 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Fri, 27 Nov 2026 21:37:25 +0100
+Subject: [PATCH] rt(menu): offer "Ray Tracing" as a graphics API and add the
+ RT rendering options
+
+- Menu.cpp: third entry "Ray Tracing" (GAT_RT = sam_iGfxAPI 2) in the
+  Classic-VK video-options API trigger; shown only if HasAPI(GAT_RT),
+  i.e. an RT-capable GPU and a loadable RTGL1. OpenGL/Vulkan stay as
+  before and remain the default.
+- SSTRE/Menu/RenderingOptionsRT.cfg (new, game root): the ray-tracing
+  section of Serious-Engine-RT's Scripts/menu/RenderingOptions.cfg (v-sync,
+  culling, reflection depth, shadows, bloom, sharpening, CRT, roughness,
+  muzzle flash), every gadget filtered by sam_bShowRayTracingOptions.
+  DLSS/FSR menus are not ported (DLSS is off in the SSTRE RTGL1 build).
+- Scripts/Menu/RenderingOptions.cfg: one line, "Include: TFNM
+  SSTRE\Menu\RenderingOptionsRT.cfg", so the retail script is touched
+  minimally (EXP-004 G4). Classic-VK's raster options are unchanged.
+- SeriousSam/VarList.cpp (TFE and TSE): new "Include:" keyword for menu
+  scripts; the included file ends with its own MenuEnd, nesting is limited
+  to 4, a missing file is skipped with a console line.
+
+Ported code: Serious-Engine-RT (https://github.com/sultim-t/Serious-Engine-RT,
+GPL-2.0-only) by Sultim Tsyrendashiev; original copyright notices kept.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ SamTFE/SSTRE/Menu/RenderingOptionsRT.cfg | 172 +++++++++++++++++++++++
+ SamTFE/Scripts/Menu/RenderingOptions.cfg |   1 +
+ SamTFE/Sources/SeriousSam/Menu.cpp       |  10 ++
+ SamTFE/Sources/SeriousSam/VarList.cpp    |  39 +++++
+ SamTSE/Sources/SeriousSam/VarList.cpp    |  39 +++++
+ 5 files changed, 261 insertions(+)
+
+diff --git a/SamTFE/SSTRE/Menu/RenderingOptionsRT.cfg b/SamTFE/SSTRE/Menu/RenderingOptionsRT.cfg
+new file mode 100644
+index 0000000000000000000000000000000000000000..d18098f2323afbec73eb7f3e4165c7ee2d6b4733
+--- /dev/null
++++ b/SamTFE/SSTRE/Menu/RenderingOptionsRT.cfg
+@@ -0,0 +1,172 @@
++// SPDX-License-Identifier: GPL-2.0-only
++// SPDX-FileCopyrightText: 2026 Handelsonderneming S.D. Broekhoven, trading as ITEagle Europe
++//
++// SSTRE: ray-tracing rendering options, read by Scripts/Menu/RenderingOptions.cfg
++// through "Include:" (SeriousSam/VarList.cpp). Every gadget is filtered by
++// sam_bShowRayTracingOptions, so it is shown only while GAT_RT is active.
++// The gadget definitions are adapted from Serious-Engine-RT
++// (https://github.com/sultim-t/Serious-Engine-RT, Scripts/menu/RenderingOptions.cfg,
++// GPL-2.0-only) by Sultim Tsyrendashiev.
++//
++//
++Gadget: 
++Type:   Separator
++Filter: sam_bShowRayTracingOptions
++//
++Gadget: TTRS Ray tracing renderer
++Type:   Separator
++Filter: sam_bShowRayTracingOptions
++//
++Gadget: 
++Type:   Separator
++Filter: sam_bShowRayTracingOptions
++
++
++//
++Gadget: TTRS Vertical synchronization
++Tip:    TTRS select v-sync mode (surface presentation mode)
++Type:   Toggle
++Var:    srt_bVSync
++Filter: sam_bShowRayTracingOptions
++
++String: TTRS No
++Value:  0
++String: TTRS Yes
++Value:  1
++
++
++//
++Gadget: TTRS Dynamic geometry culling
++Tip:    TTRS how many nearby sectors to process, affects CPU performance and CPU-GPU transactions
++Type:   Toggle
++Var:    srt_iCullingMaxSectorDepthQualityLevel
++Slider: Ratio
++Filter: sam_bShowRayTracingOptions
++
++String: TTRS (minimum)
++Value:  3
++String: TTRS (reduced)
++Value:  2
++String: TTRS (less)
++Value:  1
++String: TTRS (full)
++Value:  0
++
++
++//
++Gadget: TTRS Reflection/refraction bounces
++Tip:    TTRS number of bounces to process for perfect reflections/refractions
++Type:   Toggle
++Var:    srt_iReflMaxDepth
++Slider: Ratio
++Filter: sam_bShowRayTracingOptions
++
++String: (0)
++Value:  0
++String: (1)
++Value:  1
++String: (2)
++Value:  2
++String: (3)
++Value:  3
++String: (4)
++Value:  4
++
++
++//
++Gadget: TTRS Sphere lights
++Tip:    TTRS light bounce count for a sphere lights
++Type:   Toggle
++Var:    srt_iMaxBounceShadowsSphereLights
++Filter: sam_bShowRayTracingOptions
++
++String: TTRS 2 bounces
++Value:  2
++String: TTRS 1 bounce
++Value:  1
++
++
++//
++Gadget: TTRS Flashlight
++Tip:    TTRS light bounce count for a flashlight
++Type:   Toggle
++Var:    srt_iMaxBounceShadowsSpotlights
++Filter: sam_bShowRayTracingOptions
++
++String: TTRS 2 bounces
++Value:  2
++String: TTRS 1 bounce
++Value:  1
++
++
++//
++Gadget: TTRS Bloom intensity
++Tip:    TTRS set bloom intensity
++Type:   Toggle
++Var:    srt_fBloomIntensity
++Slider: Ratio
++Filter: sam_bShowRayTracingOptions
++
++String: TTRS (disable)
++Value:  -1
++String: (0.5)
++Value:  0.25
++String: (1.0)
++Value:  1
++
++
++// 
++Gadget: TTRS Sharpening
++Tip:    TTRS set sharpening filter
++Type:   Toggle
++Var:    srt_iOversharpMode
++Filter: sam_bShowRayTracingOptions
++
++String: TTRS Disable
++Value:  0
++String: TTRS Naive
++Value:  1
++String: AMD CAS
++Value:  2
++
++
++// 
++Gadget: TTRS CRT filter
++Tip:    TTRS toggle CRT filter
++Type:   Toggle
++Var:    srt_bCRTMode
++Filter: sam_bShowRayTracingOptions
++
++String: TTRS Disable
++Value:  0
++String: TTRS Enable
++Value:  1
++
++
++//
++Gadget: TTRS Specular roughness
++Tip:    TTRS modify roughness for indirect specular reflections
++Type:   Toggle
++Var:    srt_bIndirRoughnessSqrt
++Filter: sam_bShowRayTracingOptions
++
++String: TTRS Default
++Value:  0
++String: TTRS Rougher
++Value:  1
++
++
++//
++Gadget: TTRS Muzzle flash
++Tip:    TTRS enable muzzle flash light source
++Type:   Toggle
++Var:    srt_fMuzzleLightIntensity
++Filter: sam_bShowRayTracingOptions
++
++String: TTRS Enable
++Value:  0.25
++String: TTRS Disable
++Value:  0
++
++
++MenuEnd
+diff --git a/SamTFE/Scripts/Menu/RenderingOptions.cfg b/SamTFE/Scripts/Menu/RenderingOptions.cfg
+index 266cb99b6b77e9f2fa842606759bcc45c98fb20d..d8f8883ccd670998d87d4ebdd887ada8e308c3ee 100644
+--- a/SamTFE/Scripts/Menu/RenderingOptions.cfg
++++ b/SamTFE/Scripts/Menu/RenderingOptions.cfg
+@@ -135,2 +135,3 @@ Value:  1
+ 
++Include: TFNM SSTRE\Menu\RenderingOptionsRT.cfg
+ MenuEnd
+diff --git a/SamTFE/Sources/SeriousSam/Menu.cpp b/SamTFE/Sources/SeriousSam/Menu.cpp
+index 55d55aa5ef8a5ac3f0374b14e3764427aa6013cb..03c008d9f65ee5dc4f119a57c53aecc8e8eca446 100644
+--- a/SamTFE/Sources/SeriousSam/Menu.cpp
++++ b/SamTFE/Sources/SeriousSam/Menu.cpp
+@@ -505,6 +505,7 @@ CTString astrDisplayAPIRadioTexts[] = {
+   RADIOTRANS( "OpenGL"),
+ #ifdef SE1_VULKAN // SE1_VULKAN
+   RADIOTRANS("Vulkan"),
++  RADIOTRANS("Ray Tracing"),  // GAT_RT (SSTRE: experimental, needs RTGL1 + RT GPU)
+ #endif // SE1_VULKAN
+ #ifdef SE1_D3D
+   RADIOTRANS( "Direct3D"),
+@@ -2068,6 +2069,7 @@ static INDEX APIToSwitch(enum GfxAPIType gat)
+ #endif // SE1_D3D
+ #ifdef SE1_VULKAN
+   case GAT_VK: return GAT_VK;
++  case GAT_RT: return GAT_RT;
+ #endif // SE1_VULKAN
+   default: ASSERT(FALSE); return 0;
+   }
+@@ -2081,6 +2083,7 @@ static enum GfxAPIType SwitchToAPI(INDEX i)
+ #endif // SE1_D3D
+ #ifdef SE1_VULKAN
+   case GAT_VK: return GAT_VK;
++  case GAT_RT: return GAT_RT;
+ #endif // SE1_VULKAN
+   default: ASSERT(FALSE); return GAT_OGL;
+   }
+@@ -2172,6 +2175,8 @@ void ApplyVideoOptions(void)
+ #ifdef SE1_VULKAN
+   if( gat == GAT_VK ) { // sam_iGfxAPI need for SDL_CreateWindow
+     sam_iGfxAPI = 1;
++  } else if( gat == GAT_RT ) {
++    sam_iGfxAPI = 2;
+   } else {
+     sam_iGfxAPI = 0;
+   }
+@@ -5228,6 +5233,11 @@ static void UpdateVideoOptionsButtons(INDEX iSelected)
+ #else
+ #ifdef SE1_VULKAN
+   mgDisplayAPITrigger.mg_bEnabled = bOGLEnabled && bVKEnabled;
++  // SSTRE: offer "Ray Tracing" only if an RT GPU and the RTGL1 library are present
++  mgDisplayAPITrigger.mg_ctTexts = _pGfx->HasAPI(GAT_RT) ? 3 : 2;
++  if (mgDisplayAPITrigger.mg_iSelected >= mgDisplayAPITrigger.mg_ctTexts) {
++    mgDisplayAPITrigger.mg_iSelected = APIToSwitch(GAT_VK);
++  }
+ #else
+   mgDisplayAPITrigger.mg_bEnabled = bOGLEnabled;
+ #endif // SE1_VULKAN
+diff --git a/SamTFE/Sources/SeriousSam/VarList.cpp b/SamTFE/Sources/SeriousSam/VarList.cpp
+index 96fea9b55f7d747eb3c38f31820ea105d4b8d7bf..fb7f2e3db0ba87855ac293aaed7d3a2105616bd4 100644
+--- a/SamTFE/Sources/SeriousSam/VarList.cpp
++++ b/SamTFE/Sources/SeriousSam/VarList.cpp
+@@ -68,6 +68,41 @@ void CheckPVS_t(CVarSetting *pvs)
+   }
+ }
+ 
++void ParseCFG_t(CTStream &strm);
++
++// SSTRE (GPL-2.0-only, Copyright (C) 2026 Handelsonderneming S.D. Broekhoven,
++// trading as ITEagle Europe): "Include: TFNM <file>" appends the gadgets of
++// another menu script (which ends with its own MenuEnd). A missing file is
++// skipped with a console line, so a menu never breaks on an absent add-on.
++static INDEX _ctIncludeDepth = 0;
++static void ParseIncludedCFG_t(const CTFileName &fnm)
++{
++  if (_ctIncludeDepth >= 4) {
++    ThrowF_t(TRANS("menu script includes nested too deeply"));
++  }
++  if (!FileExists(fnm)) {
++    CPrintF("%s (%d) : included menu script '%s' not found, skipped\n",
++      (const char *)_strFile, _ctLines, (const char *)fnm);
++    return;
++  }
++  const CTString strOuterFile = _strFile;
++  const INDEX ctOuterLines = _ctLines;
++  CTFileStream strm;
++  strm.Open_t(fnm);
++  _strFile = fnm;
++  _ctLines = 0;
++  _ctIncludeDepth++;
++  try {
++    ParseCFG_t(strm);
++  } catch (...) {
++    _ctIncludeDepth--;  // keep _strFile/_ctLines: the error is reported in the included file
++    throw;
++  }
++  _ctIncludeDepth--;
++  _strFile = strOuterFile;
++  _ctLines = ctOuterLines;
++}
++
+ void ParseCFG_t(CTStream &strm)
+ {
+   CVarSetting *pvs = NULL;
+@@ -79,6 +114,10 @@ void ParseCFG_t(CTStream &strm)
+ 
+     if (strLine.RemovePrefix("MenuEnd")) {
+       return;
++    } else if (strLine.RemovePrefix("Include:")) {  // SSTRE, see ParseIncludedCFG_t()
++      FixupFileName_t(strLine);
++      ParseIncludedCFG_t(CTFileName(strLine));
++      pvs = NULL;
+     } else if (strLine.RemovePrefix("Gadget:")) {
+       pvs = new CVarSetting;
+       _lhVarSettings.AddTail(pvs->vs_lnNode);
+diff --git a/SamTSE/Sources/SeriousSam/VarList.cpp b/SamTSE/Sources/SeriousSam/VarList.cpp
+index 96fea9b55f7d747eb3c38f31820ea105d4b8d7bf..fb7f2e3db0ba87855ac293aaed7d3a2105616bd4 100644
+--- a/SamTSE/Sources/SeriousSam/VarList.cpp
++++ b/SamTSE/Sources/SeriousSam/VarList.cpp
+@@ -68,6 +68,41 @@ void CheckPVS_t(CVarSetting *pvs)
+   }
+ }
+ 
++void ParseCFG_t(CTStream &strm);
++
++// SSTRE (GPL-2.0-only, Copyright (C) 2026 Handelsonderneming S.D. Broekhoven,
++// trading as ITEagle Europe): "Include: TFNM <file>" appends the gadgets of
++// another menu script (which ends with its own MenuEnd). A missing file is
++// skipped with a console line, so a menu never breaks on an absent add-on.
++static INDEX _ctIncludeDepth = 0;
++static void ParseIncludedCFG_t(const CTFileName &fnm)
++{
++  if (_ctIncludeDepth >= 4) {
++    ThrowF_t(TRANS("menu script includes nested too deeply"));
++  }
++  if (!FileExists(fnm)) {
++    CPrintF("%s (%d) : included menu script '%s' not found, skipped\n",
++      (const char *)_strFile, _ctLines, (const char *)fnm);
++    return;
++  }
++  const CTString strOuterFile = _strFile;
++  const INDEX ctOuterLines = _ctLines;
++  CTFileStream strm;
++  strm.Open_t(fnm);
++  _strFile = fnm;
++  _ctLines = 0;
++  _ctIncludeDepth++;
++  try {
++    ParseCFG_t(strm);
++  } catch (...) {
++    _ctIncludeDepth--;  // keep _strFile/_ctLines: the error is reported in the included file
++    throw;
++  }
++  _ctIncludeDepth--;
++  _strFile = strOuterFile;
++  _ctLines = ctOuterLines;
++}
++
+ void ParseCFG_t(CTStream &strm)
+ {
+   CVarSetting *pvs = NULL;
+@@ -79,6 +114,10 @@ void ParseCFG_t(CTStream &strm)
+ 
+     if (strLine.RemovePrefix("MenuEnd")) {
+       return;
++    } else if (strLine.RemovePrefix("Include:")) {  // SSTRE, see ParseIncludedCFG_t()
++      FixupFileName_t(strLine);
++      ParseIncludedCFG_t(CTFileName(strLine));
++      pvs = NULL;
+     } else if (strLine.RemovePrefix("Gadget:")) {
+       pvs = new CVarSetting;
+       _lhVarSettings.AddTail(pvs->vs_lnNode);

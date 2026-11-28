@@ -1,0 +1,138 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Fri, 27 Nov 2026 23:55:21 +0100
+Subject: [PATCH] feat(gfx): allow tex_iNormalSize 12 and report oversized
+ texture uploads
+
+tex_iNormalSize caps the uploaded area of every non-constant texture
+(RemoveOversizedMipmaps skips mip levels until width*height <= 4^n). Its
+range was clamped to 5..11, so a 4096x4096 replacement could never be
+uploaded at full size (at most 2048x2048; the shipped GLSettings default of
+9 reduces it to 512x512). Raise the upper clamp to 12 (16.8 Mpx) so that a
+platform profile can opt in; defaults are unchanged.
+
+Also print one console line for each texture above 2048 px with its size,
+the number of skipped mip levels, the uploaded size and the deciding
+limits, so that high-resolution replacements can be verified from the log.
+Applied to the TFE and TSE engine trees (identical code).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ SamTFE/Sources/Engine/Graphics/Texture.cpp | 22 +++++++++++++++++-----
+ SamTSE/Sources/Engine/Graphics/Texture.cpp | 22 +++++++++++++++++-----
+ 2 files changed, 34 insertions(+), 10 deletions(-)
+
+diff --git a/SamTFE/Sources/Engine/Graphics/Texture.cpp b/SamTFE/Sources/Engine/Graphics/Texture.cpp
+index b4993ad29a969b6e819862cbee008c5edcb2ab4a..b7334ec0ae5d1b50b34045c35eb60aa285e88d7b 100644
+--- a/SamTFE/Sources/Engine/Graphics/Texture.cpp
++++ b/SamTFE/Sources/Engine/Graphics/Texture.cpp
+@@ -185,7 +185,9 @@ extern void UpdateTextureSettings(void)
+   tex_iNormalQuality    = TS.ts_iNormQualityO*10 + TS.ts_iNormQualityA;
+   tex_iAnimationQuality = TS.ts_iAnimQualityO*10 + TS.ts_iAnimQualityA;
+   // clamp texture size
+-  tex_iNormalSize    = Clamp( tex_iNormalSize, (INDEX)5, (INDEX)11);
++  // SSTRE (EXP-016): upper limit 11 -> 12 so that 4096x4096 replacements can be
++  // uploaded unreduced on request (defaults unchanged)
++  tex_iNormalSize    = Clamp( tex_iNormalSize, (INDEX)5, (INDEX)12);
+   tex_iAnimationSize = Clamp( tex_iAnimationSize, (INDEX)5, (INDEX)9);
+   TS.ts_pixNormSize = 1L<<(tex_iNormalSize   *2);
+   TS.ts_pixAnimSize = 1L<<(tex_iAnimationSize*2);
+@@ -578,7 +580,7 @@ static void Convert( CTextureData *pTD)
+ 
+ 
+ // remove mipmaps from texture that are not needed (exceeds maximum supported dimension)
+-static void RemoveOversizedMipmaps( CTextureData *pTD)
++static void RemoveOversizedMipmaps( CTextureData *pTD, const CTString &strName)
+ {
+   // if this is an effect texture, leave as it is
+   if( pTD->td_ptegEffect != NULL) return;
+@@ -595,11 +597,21 @@ static void RemoveOversizedMipmaps( CTextureData *pTD)
+   // determine number of mip-maps to skip
+   INDEX ctSkipMips = ClampTextureSize( pixClampAreaSize, _pGfx->gl_pixMaxTextureDimension,
+                                        pixSizeU, pixSizeV);
+-  // return if no need to remove mip-maps
+-  if( ctSkipMips==0) return;
+   // check for mip overhead
+   INDEX ctMips = GetNoOfMipmaps( pixSizeU, pixSizeV);
+   while( ctMips<=ctSkipMips) ctSkipMips--;
++  /* SSTRE modification (EXP-016), 2026-11-27:
++     Copyright (C) 2026 Handelsonderneming S.D. Broekhoven, trading as ITEagle Europe
++     SPDX-License-Identifier: GPL-2.0-only
++     Report what happens to textures above the original 2048 px design limit
++     (high-resolution replacements): uploaded size and the cvar that decided it. */
++  if( Max( pixSizeU, pixSizeV)>2048) {
++    CPrintF( "Texture '%s': %dx%d px, %d mip(s) skipped, uploaded as %dx%d (area limit %d px, max dimension %d, tex_iNormalSize=%d)\n",
++             (const char*)strName, pixSizeU, pixSizeV, ctSkipMips, pixSizeU>>ctSkipMips, pixSizeV>>ctSkipMips,
++             pixClampAreaSize, _pGfx->gl_pixMaxTextureDimension, tex_iNormalSize);
++  }
++  // return if no need to remove mip-maps
++  if( ctSkipMips==0) return;
+ 
+   // determine memory size and allocate memory for rest mip-maps
+   SLONG slRemovedMipsSize = GetMipmapOffset( ctSkipMips, pixSizeU, pixSizeV) *BYTES_PER_TEXEL;
+@@ -959,7 +971,7 @@ void CTextureData::Read_t( CTStream *inFile)
+   }
+ 
+   // remove mipmaps from texture that are not needed and update texture size
+-  if( !_bExport) RemoveOversizedMipmaps(this);
++  if( !_bExport) RemoveOversizedMipmaps(this, inFile->GetDescription());
+ 
+   // do some additional mipmap adjustments if needed
+   pixWidth  = GetPixWidth();
+diff --git a/SamTSE/Sources/Engine/Graphics/Texture.cpp b/SamTSE/Sources/Engine/Graphics/Texture.cpp
+index b4993ad29a969b6e819862cbee008c5edcb2ab4a..b7334ec0ae5d1b50b34045c35eb60aa285e88d7b 100644
+--- a/SamTSE/Sources/Engine/Graphics/Texture.cpp
++++ b/SamTSE/Sources/Engine/Graphics/Texture.cpp
+@@ -185,7 +185,9 @@ extern void UpdateTextureSettings(void)
+   tex_iNormalQuality    = TS.ts_iNormQualityO*10 + TS.ts_iNormQualityA;
+   tex_iAnimationQuality = TS.ts_iAnimQualityO*10 + TS.ts_iAnimQualityA;
+   // clamp texture size
+-  tex_iNormalSize    = Clamp( tex_iNormalSize, (INDEX)5, (INDEX)11);
++  // SSTRE (EXP-016): upper limit 11 -> 12 so that 4096x4096 replacements can be
++  // uploaded unreduced on request (defaults unchanged)
++  tex_iNormalSize    = Clamp( tex_iNormalSize, (INDEX)5, (INDEX)12);
+   tex_iAnimationSize = Clamp( tex_iAnimationSize, (INDEX)5, (INDEX)9);
+   TS.ts_pixNormSize = 1L<<(tex_iNormalSize   *2);
+   TS.ts_pixAnimSize = 1L<<(tex_iAnimationSize*2);
+@@ -578,7 +580,7 @@ static void Convert( CTextureData *pTD)
+ 
+ 
+ // remove mipmaps from texture that are not needed (exceeds maximum supported dimension)
+-static void RemoveOversizedMipmaps( CTextureData *pTD)
++static void RemoveOversizedMipmaps( CTextureData *pTD, const CTString &strName)
+ {
+   // if this is an effect texture, leave as it is
+   if( pTD->td_ptegEffect != NULL) return;
+@@ -595,11 +597,21 @@ static void RemoveOversizedMipmaps( CTextureData *pTD)
+   // determine number of mip-maps to skip
+   INDEX ctSkipMips = ClampTextureSize( pixClampAreaSize, _pGfx->gl_pixMaxTextureDimension,
+                                        pixSizeU, pixSizeV);
+-  // return if no need to remove mip-maps
+-  if( ctSkipMips==0) return;
+   // check for mip overhead
+   INDEX ctMips = GetNoOfMipmaps( pixSizeU, pixSizeV);
+   while( ctMips<=ctSkipMips) ctSkipMips--;
++  /* SSTRE modification (EXP-016), 2026-11-27:
++     Copyright (C) 2026 Handelsonderneming S.D. Broekhoven, trading as ITEagle Europe
++     SPDX-License-Identifier: GPL-2.0-only
++     Report what happens to textures above the original 2048 px design limit
++     (high-resolution replacements): uploaded size and the cvar that decided it. */
++  if( Max( pixSizeU, pixSizeV)>2048) {
++    CPrintF( "Texture '%s': %dx%d px, %d mip(s) skipped, uploaded as %dx%d (area limit %d px, max dimension %d, tex_iNormalSize=%d)\n",
++             (const char*)strName, pixSizeU, pixSizeV, ctSkipMips, pixSizeU>>ctSkipMips, pixSizeV>>ctSkipMips,
++             pixClampAreaSize, _pGfx->gl_pixMaxTextureDimension, tex_iNormalSize);
++  }
++  // return if no need to remove mip-maps
++  if( ctSkipMips==0) return;
+ 
+   // determine memory size and allocate memory for rest mip-maps
+   SLONG slRemovedMipsSize = GetMipmapOffset( ctSkipMips, pixSizeU, pixSizeV) *BYTES_PER_TEXEL;
+@@ -959,7 +971,7 @@ void CTextureData::Read_t( CTStream *inFile)
+   }
+ 
+   // remove mipmaps from texture that are not needed and update texture size
+-  if( !_bExport) RemoveOversizedMipmaps(this);
++  if( !_bExport) RemoveOversizedMipmaps(this, inFile->GetDescription());
+ 
+   // do some additional mipmap adjustments if needed
+   pixWidth  = GetPixWidth();

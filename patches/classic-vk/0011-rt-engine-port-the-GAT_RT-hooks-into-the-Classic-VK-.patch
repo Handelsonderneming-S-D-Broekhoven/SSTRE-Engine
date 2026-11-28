@@ -1,0 +1,1574 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Fri, 27 Nov 2026 21:33:47 +0100
+Subject: [PATCH] rt(engine): port the GAT_RT hooks into the Classic-VK
+ graphics/render code
+
+RT-marked hunks of Serious-Engine-RT 77a955ba..0e7f223c applied with
+git apply --3way. 41 conflict regions in 6 engine files resolved
+(DrawPort 16, GfxLibrary.cpp 5, Texture 5, GfxLibrary.h 3, Gfx_wrapper 3,
+RenderModel_View 1); render, model, particle, shadow-map and benchmark
+hooks applied cleanly.
+
+Resolution pattern: keep Classic-VK's ASSERT(GfxValidApi(eAPI)) and add
+RT's early "if (eAPI == GAT_RT) return;" in front of it; GfxValidApi()
+accepts GAT_RT. Vulkan-raster blocks stay Classic-VK's, extended with
+GAT_RT where RT shares them (DrawLine/DrawBorder/Fill via polygons).
+Texture::Unbind keeps Classic-VK's x64 NULL-pointer check for animated
+textures and adds RT's single-handle case.
+
+Two silent semantic conflicts from cleanly applied hunks fixed:
+duplicate eAPI in CDrawPort::Fill(COLOR), and the HUD quad's ptex that
+Classic-VK had commented out. Network: the current world is published via
+CShell::SetCurrentWorld (Classic-VK) instead of the UINT64 shell pair.
+
+Ported code: Serious-Engine-RT (https://github.com/sultim-t/Serious-Engine-RT,
+GPL-2.0-only) by Sultim Tsyrendashiev; original copyright notices kept.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ SamTFE/Sources/Engine/Graphics/Benchmark.cpp  |   1 +
+ SamTFE/Sources/Engine/Graphics/DrawPort.cpp   | 283 ++++++++++++++++--
+ .../Engine/Graphics/DrawPort_Particles.cpp    |  55 ++++
+ SamTFE/Sources/Engine/Graphics/GfxLibrary.cpp |  72 ++++-
+ SamTFE/Sources/Engine/Graphics/GfxLibrary.h   |  28 +-
+ .../Sources/Engine/Graphics/Gfx_wrapper.cpp   |  67 ++++-
+ SamTFE/Sources/Engine/Graphics/ShadowMap.cpp  |   5 +
+ SamTFE/Sources/Engine/Graphics/Texture.cpp    |  38 ++-
+ SamTFE/Sources/Engine/Models/Model.cpp        |   3 +
+ SamTFE/Sources/Engine/Models/RenderModel.cpp  |  50 +++-
+ .../Engine/Models/RenderModel_View.cpp        |  44 +--
+ SamTFE/Sources/Engine/Network/Network.cpp     |   9 +
+ SamTFE/Sources/Engine/Rendering/Render.cpp    | 138 ++++++++-
+ .../Engine/Rendering/Render_internal.h        |  18 ++
+ 14 files changed, 741 insertions(+), 70 deletions(-)
+
+diff --git a/SamTFE/Sources/Engine/Graphics/Benchmark.cpp b/SamTFE/Sources/Engine/Graphics/Benchmark.cpp
+index 6163d801042ce686fd233ffbd049ef380fbe551e..0eb87aae7e9b36e85377791b8ed06609187e0856 100644
+--- a/SamTFE/Sources/Engine/Graphics/Benchmark.cpp
++++ b/SamTFE/Sources/Engine/Graphics/Benchmark.cpp
+@@ -362,6 +362,7 @@ void CGfxLibrary::Benchmark(CViewPort *pvp, CDrawPort *pdp)
+ #endif // SE1_D3D
+ #ifdef SE1_VULKAN
+   else if (_pGfx->gl_eCurrentAPI == GAT_VK) strAPI = "Vulkan";
++  else if (_pGfx->gl_eCurrentAPI == GAT_RT) strAPI = "Vulkan Ray Tracing";
+ #endif // SE1_VULKAN
+ 
+   CPrintF("=====================================\n");
+diff --git a/SamTFE/Sources/Engine/Graphics/DrawPort.cpp b/SamTFE/Sources/Engine/Graphics/DrawPort.cpp
+index 339aab7f06ea38cb63cc70903b25a93e22119dab..c5b28503e97a00c49794057b1e5d02fb2d95183c 100644
+--- a/SamTFE/Sources/Engine/Graphics/DrawPort.cpp
++++ b/SamTFE/Sources/Engine/Graphics/DrawPort.cpp
+@@ -41,11 +41,24 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #include <Engine/Graphics/Vulkan/SvkMain.h>
+ #endif
+ 
++#include <Engine/Raytracing/SSRT.h>
++
+ extern INDEX gfx_bDecoratedText;
+ extern INDEX ogl_iFinish;
+ extern INDEX d3d_iFinish;
+ 
+ 
++namespace SSRT
++{
++// Special static variables that are set in InitTexture(..) and used 
++// in FlushRenderingQueue(..). Those functions are used in the following pattern:
++// InitTexture -> AddTexture -> ... -> AddTexture -> FlushRenderingQueue
++static CTextureData *ssrt_pTextureData = nullptr;
++static GfxWrap ssrt_eWrap = GFX_REPEAT;
++}
++
++
++
+ // RECT HANDLING ROUTINES
+ 
+ 
+@@ -451,12 +464,51 @@ BOOL CDrawPort::Lock(void)
+ // DRAWING ROUTINES -------------------------------------
+ 
+ 
++// function for generating indices for quad HUD elements
++void HudElement_GenerateQuadIndices(SSRT::CHudElementInfo *preparedInfo)
++{
++  const INDEX ctElements = preparedInfo->vertexCount * 6 / 4;
++  if (ctElements <= 0)
++  {
++    return;
++  }
++
++  // make sure that enough quad elements has been initialized,
++  // indices are the same so use one array without changing it
++  const INDEX ctQuads = _aiCommonQuads.Count();
++  if (ctElements > ctQuads)
++  {
++    const INDEX toAdd = ctElements - ctQuads;
++
++    const INDEX iStart = _aiCommonQuads.Count() / 6 * 4;
++    INDEX *piQuads = _aiCommonQuads.Push(toAdd * 6);
++    for (INDEX i = 0; i < toAdd; i++)
++    {
++      piQuads[i * 6 + 0] = iStart + i * 4 + 0;
++      piQuads[i * 6 + 1] = iStart + i * 4 + 1;
++      piQuads[i * 6 + 2] = iStart + i * 4 + 2;
++      piQuads[i * 6 + 3] = iStart + i * 4 + 2;
++      piQuads[i * 6 + 4] = iStart + i * 4 + 3;
++      piQuads[i * 6 + 5] = iStart + i * 4 + 0;
++    }
++  }
++
++  preparedInfo->pIndices = &_aiCommonQuads[0];
++  preparedInfo->indexCount = ctElements;
++}
++
+ 
+ // draw one point
+ void CDrawPort::DrawPoint( PIX pixI, PIX pixJ, COLOR col, PIX pixRadius/*=1*/) const
+ {
+   // check API and radius
+   const GfxAPIType eAPI = _pGfx->gl_eCurrentAPI;
++
++  if (eAPI == GAT_RT)
++  {
++    return;
++  }
++
+   ASSERT( GfxValidApi(eAPI) );
+   ASSERT( pixRadius>=0);
+   if( pixRadius==0) return; // do nothing if radius is 0
+@@ -513,6 +565,12 @@ void CDrawPort::DrawPoint3D( FLOAT3D v, COLOR col, FLOAT fRadius/*=1.0f*/) const
+ {
+   // check API and radius
+   const GfxAPIType eAPI = _pGfx->gl_eCurrentAPI;
++
++  if (eAPI == GAT_RT)
++  {
++    return;
++  }
++
+   ASSERT( GfxValidApi(eAPI) );
+   ASSERT( fRadius>=0);
+   if( fRadius==0) return; // do nothing if radius is 0
+@@ -567,7 +625,7 @@ void CDrawPort::DrawLine( PIX pixI0, PIX pixJ0, PIX pixI1, PIX pixJ1, COLOR col,
+ 
+ #ifdef SE1_VULKAN
+   // only lines that are aligned with axes
+-  if (eAPI == GAT_VK)
++  if (eAPI == GAT_VK || eAPI == GAT_RT)
+   {
+     // vertical line
+     if (pixI0 == pixI1)
+@@ -654,6 +712,12 @@ void CDrawPort::DrawLine3D( FLOAT3D v0, FLOAT3D v1, COLOR col) const
+ {
+   // check API
+   const GfxAPIType eAPI = _pGfx->gl_eCurrentAPI;
++
++  if (eAPI == GAT_RT)
++  {
++    return;
++  }
++
+   ASSERT( GfxValidApi(eAPI) );
+ 
+   // setup rendering mode
+@@ -714,7 +778,7 @@ void CDrawPort::DrawBorder( PIX pixI, PIX pixJ, PIX pixWidth, PIX pixHeight, COL
+   // check API
+   const GfxAPIType eAPI = _pGfx->gl_eCurrentAPI;
+ #ifdef SE1_VULKAN
+-  if ( eAPI == GAT_VK )
++  if ( eAPI == GAT_VK || eAPI == GAT_RT )
+   {
+     // top
+     Fill(pixI, pixJ, 
+@@ -814,7 +878,7 @@ void CDrawPort::Fill( PIX pixI, PIX pixJ, PIX pixWidth, PIX pixHeight, COLOR col
+ 
+ #ifdef SE1_VULKAN
+   // draw only using polygons
+-  if ( eAPI == GAT_VK )
++  if ( eAPI == GAT_VK || eAPI == GAT_RT )
+   {
+     Fill(pixI, pixJ, pixWidth, pixHeight, col, col, col, col);
+     return;
+@@ -889,28 +953,32 @@ void CDrawPort::Fill( PIX pixI, PIX pixJ, PIX pixWidth, PIX pixHeight,
+   gfxDisableDepthTest();
+   gfxDisableDepthWrite();
+   gfxEnableBlend();
+-  gfxBlendFunc( GFX_SRC_ALPHA, GFX_INV_SRC_ALPHA);
++  gfxBlendFunc(GFX_SRC_ALPHA, GFX_INV_SRC_ALPHA);
+   gfxDisableAlphaTest();
+   gfxDisableTexture();
++
+   // prepare colors and coords
+-  colUL = AdjustColor( colUL, _slTexHueShift, _slTexSaturation);
+-  colUR = AdjustColor( colUR, _slTexHueShift, _slTexSaturation);
+-  colDL = AdjustColor( colDL, _slTexHueShift, _slTexSaturation);
+-  colDR = AdjustColor( colDR, _slTexHueShift, _slTexSaturation);
+-  const FLOAT fI0 = pixI;  const FLOAT fI1 = pixI +pixWidth; 
+-  const FLOAT fJ0 = pixJ;  const FLOAT fJ1 = pixJ +pixHeight;
++  colUL = AdjustColor(colUL, _slTexHueShift, _slTexSaturation);
++  colUR = AdjustColor(colUR, _slTexHueShift, _slTexSaturation);
++  colDL = AdjustColor(colDL, _slTexHueShift, _slTexSaturation);
++  colDR = AdjustColor(colDR, _slTexHueShift, _slTexSaturation);
++  const FLOAT fI0 = pixI;  const FLOAT fI1 = pixI + pixWidth;
++  const FLOAT fJ0 = pixJ;  const FLOAT fJ1 = pixJ + pixHeight;
+ 
+   // render rectangle
+-  if( eAPI==GAT_OGL
+-#ifdef SE1_VULKAN
+-    || eAPI == GAT_VK
+-#endif // SE1_VULKAN
+-    ) {
++  if (eAPI == GAT_OGL
++    #ifdef SE1_VULKAN
++      || eAPI == GAT_VK
++      || eAPI == GAT_RT
++    #endif // SE1_VULKAN
++      )
++  {
++
+     // thru OpenGL
+     gfxResetArrays();
+-    GFXVertex   *pvtx = _avtxCommon.Push(4);
+-    /* GFXTexCoord *ptex = */ _atexCommon.Push(4);
+-    GFXColor    *pcol = _acolCommon.Push(4);
++    GFXVertex *pvtx = _avtxCommon.Push(4);
++    GFXTexCoord *ptex = _atexCommon.Push(4);
++    GFXColor *pcol = _acolCommon.Push(4);
+     const GFXColor glcolUL(colUL);  const GFXColor glcolUR(colUR);
+     const GFXColor glcolDL(colDL);  const GFXColor glcolDR(colDR);
+     // add to element list and flush (the toilet!:)
+@@ -918,10 +986,30 @@ void CDrawPort::Fill( PIX pixI, PIX pixJ, PIX pixWidth, PIX pixHeight,
+     pvtx[1].x = fI0;  pvtx[1].y = fJ1;  pvtx[1].z = 0;  pcol[1] = glcolDL;
+     pvtx[2].x = fI1;  pvtx[2].y = fJ1;  pvtx[2].z = 0;  pcol[2] = glcolDR;
+     pvtx[3].x = fI1;  pvtx[3].y = fJ0;  pvtx[3].z = 0;  pcol[3] = glcolUR;
++
++
++    if (eAPI == GAT_RT)
++    {
++      SSRT::CHudElementInfo hudInfo = {};
++      // hudInfo.blendEnable = true;
++      // hudInfo.blendFuncSrc = GFX_SRC_ALPHA;
++      // hudInfo.blendFuncDst = GFX_INV_SRC_ALPHA;
++      hudInfo.textureData = nullptr;
++
++      hudInfo.pPositions = &_avtxCommon[0];
++      hudInfo.pTexCoords = &_atexCommon[0];
++      hudInfo.pColors = &_acolCommon[0];
++      hudInfo.vertexCount = _avtxCommon.Count();
++      HudElement_GenerateQuadIndices(&hudInfo);
++
++      _pGfx->gl_SSRT->ProcessHudElement(hudInfo);
++    }
++
+     gfxFlushQuads();
+   }
+ #ifdef SE1_D3D
+-  else if( eAPI==GAT_D3D) { 
++  else if (eAPI == GAT_D3D)
++  {
+     // thru Direct3D
+     HRESULT hr;
+     const ULONG d3dColUL = rgba2argb(colUL);  const ULONG d3dColUR = rgba2argb(colUR);
+@@ -941,6 +1029,16 @@ void CDrawPort::Fill( PIX pixI, PIX pixJ, PIX pixWidth, PIX pixHeight,
+ // fill an entire drawport with a given color
+ void CDrawPort::Fill( COLOR col) const
+ {
++  const GfxAPIType eAPI = _pGfx->gl_eCurrentAPI;
++
++  if (eAPI == GAT_RT)
++  {
++    // draw only using polygons
++    Fill(0, 0, dp_Width, dp_Height, col, col, col, col);
++
++    return;
++  }
++
+   // if color is tranlucent
+   if( ((col&CT_AMASK)>>CT_ASHIFT) != CT_OPAQUE)
+   { // draw thru polygon
+@@ -952,7 +1050,7 @@ void CDrawPort::Fill( COLOR col) const
+   col = AdjustColor( col, _slTexHueShift, _slTexSaturation);
+ 
+   // check API
+-  const GfxAPIType eAPI = _pGfx->gl_eCurrentAPI;
++  // (eAPI is read at the top of this function: RT hook)
+   ASSERT( GfxValidApi(eAPI) );
+ 
+   // OpenGL
+@@ -993,6 +1091,13 @@ void CDrawPort::FillZBuffer( PIX pixI, PIX pixJ, PIX pixWidth, PIX pixHeight, FL
+ { 
+   // check API
+   const GfxAPIType eAPI = _pGfx->gl_eCurrentAPI;
++
++  if (eAPI == GAT_RT)
++  {
++    // ignore z buffer
++    return;
++  }
++
+   ASSERT( GfxValidApi(eAPI) );
+ 
+   // clip and eventually reject
+@@ -1036,6 +1141,13 @@ void CDrawPort::FillZBuffer( FLOAT zval) const
+ { 
+   // check API
+   const GfxAPIType eAPI = _pGfx->gl_eCurrentAPI;
++
++  if (eAPI == GAT_RT)
++  {
++    // ignore z buffer
++    return;
++  }
++
+   ASSERT( GfxValidApi(eAPI) );
+   gfxEnableDepthWrite();
+ 
+@@ -1161,6 +1273,12 @@ void CDrawPort::GrabScreen( class CImageInfo &iiGrabbedImage, INDEX iGrabZBuffer
+     CPrintF("Screen grabbing is not implemented for Vulkan.\n");
+   #endif // !NDEBUG
+   }
++  else if (eAPI == GAT_RT)
++  {
++  #ifndef NDEBUG
++    CPrintF("Screen grabbing is not implemented for Vulkan.\n");
++  #endif // !NDEBUG
++  }
+ #endif // SE1_VULKAN
+ }
+ 
+@@ -1192,8 +1310,13 @@ BOOL CDrawPort::IsPointVisible( PIX pixI, PIX pixJ, FLOAT fOoK, INDEX iID, INDEX
+ void CDrawPort::RenderLensFlare( CTextureObject *pto, FLOAT fI, FLOAT fJ,
+                                  FLOAT fSizeI, FLOAT fSizeJ, ANGLE aRotation, COLOR colLight) const
+ {
+-  // check API
+   const GfxAPIType eAPI = _pGfx->gl_eCurrentAPI;
++
++  if (eAPI == GAT_RT)
++  {
++    return;
++  }
++
+   ASSERT( GfxValidApi(eAPI) );
+ 
+   // setup rendering mode
+@@ -1536,6 +1659,28 @@ void CDrawPort::PutText( const CTString &strText, PIX pixX0, PIX pixY0, const CO
+   _avtxCommon.PopUntil( ctCharsPrinted*4-1);
+   _atexCommon.PopUntil( ctCharsPrinted*4-1);
+   _acolCommon.PopUntil( ctCharsPrinted*4-1);
++
++
++  
++  if (eAPI == GAT_RT && _avtxCommon.Count() > 0)
++  {
++    SSRT::CHudElementInfo hudInfo = {};
++    // hudInfo.blendEnable = true;
++    // hudInfo.blendFuncSrc = GFX_SRC_ALPHA;
++    // hudInfo.blendFuncDst = GFX_INV_SRC_ALPHA;
++    hudInfo.textureData = &td;
++    hudInfo.textureWrapU = hudInfo.textureWrapV = GFX_REPEAT;
++
++    hudInfo.pPositions = &_avtxCommon[0];
++    hudInfo.pTexCoords = &_atexCommon[0];
++    hudInfo.pColors = &_acolCommon[0];
++    hudInfo.vertexCount = _avtxCommon.Count();
++    HudElement_GenerateQuadIndices(&hudInfo);
++
++    _pGfx->gl_SSRT->ProcessHudElement(hudInfo);
++  }
++
++
+   gfxFlushQuads();
+ 
+   // all done
+@@ -1671,6 +1816,27 @@ void CDrawPort::PutTexture( class CTextureObject *pTO,
+   pcol[1] = glcolDL;
+   pcol[2] = glcolDR;
+   pcol[3] = glcolUR;
++
++
++  if (eAPI == GAT_RT)
++  {    
++    SSRT::CHudElementInfo hudInfo = {};
++    // hudInfo.blendEnable = true;
++    // hudInfo.blendFuncSrc = GFX_SRC_ALPHA;
++    // hudInfo.blendFuncDst = GFX_INV_SRC_ALPHA;
++    hudInfo.textureData = ptd;
++    hudInfo.textureWrapU = hudInfo.textureWrapV = GFX_REPEAT;
++
++    hudInfo.pPositions = &_avtxCommon[0];
++    hudInfo.pTexCoords = &_atexCommon[0];
++    hudInfo.pColors = &_acolCommon[0];
++    hudInfo.vertexCount = _avtxCommon.Count();
++    HudElement_GenerateQuadIndices(&hudInfo);
++
++    _pGfx->gl_SSRT->ProcessHudElement(hudInfo);
++  }
++
++
+   gfxFlushQuads();
+   _pfGfxProfile.StopTimer( CGfxProfile::PTI_PUTTEXTURE);
+ }
+@@ -1680,15 +1846,34 @@ void CDrawPort::PutTexture( class CTextureObject *pTO,
+ // prepares texture and rendering arrays
+ void CDrawPort::InitTexture( class CTextureObject *pTO, const BOOL bClamp/*=FALSE*/) const
+ {
++  const GfxAPIType eAPI = _pGfx->gl_eCurrentAPI;
++
+   // prepare
+-  if( pTO!=NULL) {
++  if( pTO!=NULL)
++  {
+     // has texture
+     CTextureData *ptd = (CTextureData*)pTO->GetData();
+     GfxWrap eWrap = GFX_REPEAT;
+     if( bClamp) eWrap = GFX_CLAMP;
+     gfxSetTextureWrapping( eWrap, eWrap);
+-    ptd->SetAsCurrent(pTO->GetFrame());
+-  } else {
++    
++    if (eAPI == GAT_RT)
++    {
++      SSRT::ssrt_pTextureData = ptd;
++      SSRT::ssrt_eWrap = eWrap;
++    }
++    else
++    {
++      ptd->SetAsCurrent(pTO->GetFrame());
++    }
++  } 
++  else 
++  {
++    if (eAPI == GAT_RT)
++    {
++      SSRT::ssrt_pTextureData = nullptr;
++    }
++
+     // no texture
+     gfxDisableTexture();
+   }
+@@ -1814,7 +1999,33 @@ void CDrawPort::AddTexture( const FLOAT fI0, const FLOAT fJ0, const FLOAT fU0, c
+ 
+ // renders all textures from rendering queue and flushed rendering arrays
+ void CDrawPort::FlushRenderingQueue(void) const
+-{ 
++{
++  const GfxAPIType eAPI = _pGfx->gl_eCurrentAPI;
++  
++  if (eAPI == GAT_RT)
++  {
++    SSRT::CHudElementInfo hudInfo = {};
++    // hudInfo.blendEnable = true;
++    // hudInfo.blendFuncSrc = GFX_SRC_ALPHA;
++    // hudInfo.blendFuncDst = GFX_INV_SRC_ALPHA;
++
++    // ssrt_pTextureData can be nullptr
++    hudInfo.textureData = SSRT::ssrt_pTextureData;
++    hudInfo.textureWrapU = hudInfo.textureWrapV = SSRT::ssrt_eWrap;
++
++    hudInfo.pPositions = &_avtxCommon[0];
++    hudInfo.pTexCoords = &_atexCommon[0];
++    hudInfo.pColors = &_acolCommon[0];
++    hudInfo.vertexCount = _avtxCommon.Count();
++    hudInfo.pIndices = &_aiCommonElements[0];
++    hudInfo.indexCount = _aiCommonElements.Count();
++
++    // indices will be set there
++    _pGfx->gl_SSRT->ProcessHudElement(hudInfo);
++
++    SSRT::ssrt_pTextureData = nullptr;
++  }
++
+   gfxFlushElements(); 
+   gfxResetArrays(); 
+ }
+@@ -1847,7 +2058,7 @@ void CDrawPort::BlendScreen(void)
+   // set arrays
+   gfxResetArrays();
+   GFXVertex   *pvtx = _avtxCommon.Push(4);
+-  /* GFXTexCoord *ptex = */ _atexCommon.Push(4);
++  GFXTexCoord *ptex = _atexCommon.Push(4);  // RT: used by the HUD element
+   GFXColor    *pcol = _acolCommon.Push(4);
+   const INDEX iW = dp_Width;
+   const INDEX iH = dp_Height;
+@@ -1859,6 +2070,26 @@ void CDrawPort::BlendScreen(void)
+   pcol[1] = glcol;
+   pcol[2] = glcol;
+   pcol[3] = glcol;
++
++  const GfxAPIType eAPI = _pGfx->gl_eCurrentAPI;
++
++  if (eAPI == GAT_RT && _avtxCommon.Count() > 0)
++  {
++    SSRT::CHudElementInfo hudInfo = {};
++    // hudInfo.blendEnable = true;
++    // hudInfo.blendFuncSrc = GFX_SRC_ALPHA;
++    // hudInfo.blendFuncDst = GFX_INV_SRC_ALPHA;
++    hudInfo.textureData = nullptr;
++    
++    hudInfo.pPositions = pvtx;
++    hudInfo.pTexCoords = ptex;
++    hudInfo.pColors = pcol;
++    hudInfo.vertexCount = 4;
++    HudElement_GenerateQuadIndices(&hudInfo);
++
++    _pGfx->gl_SSRT->ProcessHudElement(hudInfo);
++  }
++  
+   gfxFlushQuads();
+   // reset accumulation color
+   dp_ulBlendingRA = 0;
+diff --git a/SamTFE/Sources/Engine/Graphics/DrawPort_Particles.cpp b/SamTFE/Sources/Engine/Graphics/DrawPort_Particles.cpp
+index 2faddca28941953a0044986963af1e5d754a61cb..0ba0e7f5b4bf5c519aab17224c7d630371f54437 100644
+--- a/SamTFE/Sources/Engine/Graphics/DrawPort_Particles.cpp
++++ b/SamTFE/Sources/Engine/Graphics/DrawPort_Particles.cpp
+@@ -27,6 +27,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #include <Engine/Templates/StaticArray.cpp>
+ #include <Engine/Templates/StaticStackArray.cpp>
+ 
++#include <Engine/Raytracing/RTProcessing.h>
+ 
+ extern const FLOAT *pfSinTable;
+ extern const FLOAT *pfCosTable;
+@@ -57,6 +58,14 @@ static INDEX _iFrame = 0;
+ // prepare particles for rendering
+ void Particle_PrepareSystem( CDrawPort *pdpDrawPort, CAnyProjection3D &prProjection)
+ {
++  if (_pGfx->gl_eCurrentAPI == GAT_RT)
++  {
++    _Particle_iCurrentDrawPort = 0;
++
++    gfxResetArrays();
++    return;
++  }
++
+   _pDP = pdpDrawPort;
+   _pprProjection = (CProjection3D*)&*prProjection;
+   _fNearClipDistance = -prProjection->pr_NearClipDistance;
+@@ -79,6 +88,11 @@ void Particle_PrepareSystem( CDrawPort *pdpDrawPort, CAnyProjection3D &prProject
+ 
+ void Particle_EndSystem( BOOL bRestoreOrtho/*=TRUE*/)
+ {
++  if (_pGfx->gl_eCurrentAPI == GAT_RT)
++  {
++    return;
++  }
++
+   // reset projection and re-enable clipping
+   if( bRestoreOrtho) _pDP->SetOrtho();
+   gfxEnableClipping();
+@@ -108,6 +122,12 @@ INDEX Particle_GetDrawPortID(void)
+ 
+ void Particle_PrepareTexture( CTextureObject *pto, enum ParticleBlendType pbt)
+ {
++  if (_pGfx->gl_eCurrentAPI == GAT_RT)
++  {
++    RT_Particle_PrepareTexture(pto, pbt);
++    return;
++  }
++
+   // determine blend type
+   switch( pbt) {
+   case PBT_BLEND:
+@@ -171,6 +191,12 @@ void Particle_PrepareTexture( CTextureObject *pto, enum ParticleBlendType pbt)
+ 
+ void Particle_SetTexturePart( MEX mexWidth, MEX mexHeight, INDEX iCol, INDEX iRow)
+ {
++  if (_pGfx->gl_eCurrentAPI == GAT_RT)
++  {
++    RT_Particle_SetTexturePart(mexWidth, mexHeight, iCol, iRow);
++    return;
++  }
++
+   // prepare full texture for displaying
+   MEXaabbox2D boxTextureClipped( MEX2D( mexWidth*(iCol+0), mexHeight*(iRow+0)),
+                                  MEX2D( mexWidth*(iCol+1), mexHeight*(iRow+1)));
+@@ -191,6 +217,12 @@ void Particle_SetTexturePart( MEX mexWidth, MEX mexHeight, INDEX iCol, INDEX iRo
+ // add one particle square to rendering queue
+ void Particle_RenderSquare( const FLOAT3D &vPos, FLOAT fSize, ANGLE aRotation, COLOR col, FLOAT fYRatio/*=1.0f*/)
+ {
++  if (_pGfx->gl_eCurrentAPI == GAT_RT)
++  {
++    RT_Particle_RenderSquare(vPos, fSize, aRotation, col, fYRatio);
++    return;
++  }
++
+   // trivial rejection
+   if( fSize<0.0001f || ((col&CT_AMASK)>>CT_ASHIFT)<2) return;
+ 
+@@ -288,6 +320,12 @@ void Particle_RenderSquare( const FLOAT3D &vPos, FLOAT fSize, ANGLE aRotation, C
+ // add one particle line to rendering queue
+ void Particle_RenderLine( const FLOAT3D &vPos0, const FLOAT3D &vPos1, FLOAT fWidth, COLOR col)
+ {
++  if (_pGfx->gl_eCurrentAPI == GAT_RT)
++  {
++    RT_Particle_RenderLine(vPos0, vPos1, fWidth, col);
++    return;
++  }
++
+   // trivial rejection
+   if( fWidth<0 || ((col&CT_AMASK)>>CT_ASHIFT)<2) return;
+ 
+@@ -391,6 +429,12 @@ void Particle_RenderLine( const FLOAT3D &vPos0, const FLOAT3D &vPos1, FLOAT fWid
+ void Particle_RenderQuad3D( const FLOAT3D &vPos0, const FLOAT3D &vPos1, const FLOAT3D &vPos2,
+                             const FLOAT3D &vPos3, COLOR col)
+ {
++  if (_pGfx->gl_eCurrentAPI == GAT_RT)
++  {
++    RT_Particle_RenderQuad3D(vPos0, vPos1, vPos2, vPos3, col);
++    return;
++  }
++
+   // trivial rejection
+   if( ((col&CT_AMASK)>>CT_ASHIFT)<2) return;
+ 
+@@ -509,6 +553,12 @@ void Particle_RenderQuad3D( const FLOAT3D &vPos0, const FLOAT3D &vPos1, const FL
+ // flushes particle rendering queue (i.e. renders particle on screen)
+ void Particle_Flush(void)
+ {
++  if (_pGfx->gl_eCurrentAPI == GAT_RT)
++  {
++    RT_Particle_Flush();
++    return;
++  }
++
+   // update stats
+   const INDEX ctParticles = _avtxCommon.Count()/4;
+   _sfStats.IncrementCounter( CStatForm::SCI_PARTICLES, ctParticles);
+@@ -587,6 +637,11 @@ static int qsort_CompareZ3D( const void *pI0, const void *pI1) {
+ // sorts particles by distance
+ void Particle_Sort( BOOL b3D/*=FALSE*/)
+ {
++  if (_pGfx->gl_eCurrentAPI == GAT_RT)
++  {
++    return;
++  }
++
+   INDEX i;
+   const INDEX ctParticles = _avtxCommon.Count()/4; 
+   if( ctParticles<=0) return; // nothing to do!
+diff --git a/SamTFE/Sources/Engine/Graphics/GfxLibrary.cpp b/SamTFE/Sources/Engine/Graphics/GfxLibrary.cpp
+index d58473a8078bb9a62540480b1df6e07d99eabac0..10560ff42e56144254074541ebcc7cd6538053e6 100644
+--- a/SamTFE/Sources/Engine/Graphics/GfxLibrary.cpp
++++ b/SamTFE/Sources/Engine/Graphics/GfxLibrary.cpp
+@@ -334,6 +334,7 @@ static INDEX sys_bHasCVAs = 0;
+ static INDEX sys_bUsingOpenGL = 0;
+ static INDEX sys_bUsingDirect3D = 0;
+ static INDEX sys_bUsingVulkan = 0;
++static INDEX sys_bUsingRayTracing = 0;
+ 
+ /*
+  * Low level hook flags
+@@ -540,6 +541,7 @@ static void GAPInfo(void)
+ #endif // SE1_D3D
+ #ifdef SE1_VULKAN
+     && _pGfx->gl_SvkMain->gl_VkInstance==VK_NULL_HANDLE
++    && _pGfx->gl_SSRT == nullptr
+ #endif // SE1_VULKAN
+ 
+     ) || eAPI==GAT_NONE) {
+@@ -556,6 +558,7 @@ static void GAPInfo(void)
+ #endif // SE1_D3D
+ #ifdef SE1_VULKAN
+   else if (eAPI == GAT_VK) CPrintF("Vulkan\n");
++  else if (eAPI == GAT_RT) CPrintF("Vulkan Ray Tracing\n");
+ #endif // SE1_VULKAN
+   
+   // and number of adapters
+@@ -782,6 +785,10 @@ static void GAPInfo(void)
+   {
+     CPrintF("Using Vulkan API.\n");
+   }
++  if (eAPI == GAT_RT)
++  {
++    CPrintF("Using ray tracing.\n");
++  }
+ #endif // SE1_VULKAN
+ }
+ 
+@@ -801,6 +808,7 @@ extern void UpdateGfxSysCVars(void)
+   sys_bHasCVAs = 1;
+   sys_bUsingOpenGL = 0;
+   sys_bUsingVulkan = 0;
++  sys_bUsingRayTracing = 0;
+   sys_bUsingDirect3D = 0;
+   if( _pGfx->gl_iMaxTextureAnisotropy>1) sys_bHasTextureAnisotropy = 1;
+   if( _pGfx->gl_fMaxTextureLODBias>0) sys_bHasTextureLODBias = 1;
+@@ -824,6 +832,7 @@ extern void UpdateGfxSysCVars(void)
+ 
+ #ifdef SE1_VULKAN
+   if (_pGfx->gl_eCurrentAPI == GAT_VK) sys_bUsingVulkan = 1;
++  if (_pGfx->gl_eCurrentAPI == GAT_RT) sys_bUsingRayTracing = 1;
+ #endif // SE1_VULKAN
+ }
+ 
+@@ -1118,6 +1127,7 @@ CGfxLibrary::CGfxLibrary(void)
+ 
+ #ifdef SE1_VULKAN
+   gl_SvkMain = nullptr;
++  gl_SSRT = nullptr;
+ #endif // SE1_VULKAN
+ 
+   // reset profiling counters
+@@ -1389,9 +1399,12 @@ void CGfxLibrary::Init(void)
+   _pShell->DeclareSymbol( "INDEX sys_bUsingOpenGL;",  (void *) &sys_bUsingOpenGL);
+   _pShell->DeclareSymbol( "INDEX sys_bUsingDirect3D;", (void *) &sys_bUsingDirect3D);
+   _pShell->DeclareSymbol( "INDEX sys_bUsingVulkan;", (void *) &sys_bUsingVulkan);
++  _pShell->DeclareSymbol( "INDEX sys_bUsingRayTracing;", (void *) &sys_bUsingRayTracing);
+ 
+   // initialize gfx APIs support
+   InitAPIs();
++
++  InitShellVariables_RayTracing();
+ }
+ 
+ 
+@@ -1558,6 +1571,13 @@ BOOL CGfxLibrary::StartDisplayMode( enum GfxAPIType eAPI, INDEX iAdapter, PIX pi
+ 
+     gl_eCurrentAPI = GAT_VK;
+   }
++  else if (eAPI == GAT_RT)
++  {
++    bSuccess = InitDriver_RayTracing();
++    if (!bSuccess) return FALSE;
++
++    gl_eCurrentAPI = GAT_RT;
++  }
+ #endif // SE1_VULKAN
+ 
+   // no driver
+@@ -1614,6 +1634,11 @@ void CGfxLibrary::StopDisplayMode(void)
+     EndDriver_Vulkan();
+     MonitorsOn();
+   }
++  else if (gl_eCurrentAPI == GAT_RT)
++  { // Vulkan ray tracing
++    EndDriver_RayTracing();
++    MonitorsOn();
++  }
+ #endif // SE1_VULKAN
+   else
+   { // none
+@@ -1655,6 +1680,7 @@ BOOL CGfxLibrary::SetCurrentViewport(CViewPort *pvp)
+     //CPrintF("Vulkan: Set current viewport Vulkan.\n");  
+     return SetCurrentViewport_Vulkan(pvp);
+   }
++  if (gl_eCurrentAPI == GAT_RT) return SetCurrentViewport_RayTracing(pvp);
+ #endif // SE1_VULKAN
+   if( gl_eCurrentAPI==GAT_NONE) return TRUE;
+   ASSERTALWAYS( "SetCurrenViewport: Wrong API!");
+@@ -1670,7 +1696,7 @@ BOOL CGfxLibrary::LockDrawPort( CDrawPort *pdpToLock)
+   ASSERT( gl_eCurrentAPI==GAT_OGL || gl_eCurrentAPI==GAT_D3D || gl_eCurrentAPI==GAT_NONE);
+ #else // SE1_D3D
+ #ifdef SE1_VULKAN
+-  ASSERT(gl_eCurrentAPI == GAT_OGL || gl_eCurrentAPI == GAT_VK || gl_eCurrentAPI == GAT_NONE);
++  ASSERT(gl_eCurrentAPI == GAT_OGL || gl_eCurrentAPI == GAT_VK || gl_eCurrentAPI == GAT_RT || gl_eCurrentAPI == GAT_NONE);
+ #else
+   ASSERT(gl_eCurrentAPI == GAT_OGL || gl_eCurrentAPI == GAT_NONE);
+ #endif // SE1_VULKAN
+@@ -1725,6 +1751,15 @@ BOOL CGfxLibrary::LockDrawPort( CDrawPort *pdpToLock)
+     //CPrintF("Vulkan: Lock DrawPort.\n"); // for test 
+     SetViewport_Vulkan(pixMinSI, pixMinSJ, pixMaxSI - pixMinSI + 1, pixMaxSJ - pixMinSJ + 1, 0, 1);
+   }
++  else if (gl_eCurrentAPI == GAT_RT)
++  {
++    const PIX pixMinSI = pdpToLock->dp_ScissorMinI;
++    const PIX pixMaxSI = pdpToLock->dp_ScissorMaxI;
++    const PIX pixMinSJ = pdpToLock->dp_ScissorMinJ;
++    const PIX pixMaxSJ = pdpToLock->dp_ScissorMaxJ;
++
++    SetViewport_RayTracing(pixMinSI, pixMinSJ, pixMaxSI - pixMinSI + 1, pixMaxSJ - pixMinSJ + 1, 0, 1);
++  }
+ #endif // SE1_VULKAN
+ 
+   // mark and set default projection
+@@ -1738,6 +1773,11 @@ BOOL CGfxLibrary::LockDrawPort( CDrawPort *pdpToLock)
+ // Unlock a drawport after drawing
+ void CGfxLibrary::UnlockDrawPort( CDrawPort *pdpToUnlock)
+ {
++  if (gl_eCurrentAPI == GAT_RT)
++  {
++    return;
++  }
++
+   // check API
+ #ifdef SE1_D3D
+   ASSERT(gl_eCurrentAPI == GAT_OGL || gl_eCurrentAPI == GAT_D3D || gl_eCurrentAPI == GAT_NONE);
+@@ -1983,7 +2023,7 @@ void CGfxLibrary::SwapBuffers(CViewPort *pvp)
+   ASSERT(gl_eCurrentAPI == GAT_OGL || gl_eCurrentAPI == GAT_D3D || gl_eCurrentAPI == GAT_NONE);
+ #else // SE1_D3D
+ #ifdef SE1_VULKAN
+-  ASSERT(gl_eCurrentAPI == GAT_OGL || gl_eCurrentAPI == GAT_VK || gl_eCurrentAPI == GAT_NONE);
++  ASSERT(gl_eCurrentAPI == GAT_OGL || gl_eCurrentAPI == GAT_VK || gl_eCurrentAPI == GAT_RT || gl_eCurrentAPI == GAT_NONE);
+ #else
+   ASSERT(gl_eCurrentAPI == GAT_OGL || gl_eCurrentAPI == GAT_NONE);
+ #endif // SE1_VULKAN
+@@ -1996,8 +2036,13 @@ void CGfxLibrary::SwapBuffers(CViewPort *pvp)
+     return;
+   }
+ 
+-  // optimize memory used by cached shadow maps and update shadowmap counters
+-  ReduceShadows();
++#ifdef SE1_VULKAN
++  if (gl_eCurrentAPI != GAT_RT)
++#endif
++  {
++    // optimize memory used by cached shadow maps and update shadowmap counters
++    ReduceShadows();
++  }
+ 
+   // check and eventually adjust texture filtering and LOD biasing
+   gfxSetTextureFiltering( gap_iTextureFiltering, gap_iTextureAnisotropy);
+@@ -2110,6 +2155,13 @@ void CGfxLibrary::SwapBuffers(CViewPort *pvp)
+     // force finishing of all rendering operations (if required)
+     //if (vk_iFinish == 3) gfxFinish();
+   }
++  else if (gl_eCurrentAPI == GAT_RT)
++  {
++    // if (GFX_bRenderingScene)
++    {
++      EndFrame_RayTracing();
++    }
++  }
+ #endif // SE1_VK
+ 
+ 
+@@ -2252,10 +2304,16 @@ BOOL CGfxLibrary::LockRaster( CRaster *praToLock)
+     } // mark it
+ #endif // SE1_D3D
+ #ifdef SE1_VULKAN
+-    if (gl_eCurrentAPI == GAT_VK && !GFX_bRenderingScene)
++    if (!GFX_bRenderingScene)
+     {
+-      gl_SvkMain->StartFrame();
+-      //CPrintF("Vulkan: Lock Raster.\n"); // for test
++      if (gl_eCurrentAPI == GAT_RT)
++      {
++        StartFrame_RayTracing(praToLock);
++      }
++      else if (gl_eCurrentAPI == GAT_VK)
++      {
++        gl_SvkMain->StartFrame(); 
++      }
+     }
+ #endif // SE1_VULKAN
+ 
+diff --git a/SamTFE/Sources/Engine/Graphics/GfxLibrary.h b/SamTFE/Sources/Engine/Graphics/GfxLibrary.h
+index 3901f6db2ed4c4d0d3447ec7847afcac46bc8d42..14b3fa4108ace94aa741037bc052db8e98c04d9e 100644
+--- a/SamTFE/Sources/Engine/Graphics/GfxLibrary.h
++++ b/SamTFE/Sources/Engine/Graphics/GfxLibrary.h
+@@ -28,6 +28,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #include <Engine/Base/Lists.h>
+ #include <Engine/Math/Functions.h>
+ #include <Engine/Graphics/Adapter.h>
++#include <Engine/Graphics/Color.h>
+ #include <Engine/Graphics/Vertex.h>
+ 
+ // common element arrays
+@@ -42,6 +43,10 @@ extern CStaticStackArray<INDEX_T>     _aiCommonQuads;
+ #include <Engine/Base/DynamicLoader.h>
+ #ifdef SE1_VULKAN
+ class SvkMain;
++namespace SSRT
++{
++class SSRTMain;
++}
+ #endif // SE1_VULKAN
+ 
+ 
+@@ -74,7 +79,7 @@ enum GfxAPIType
+ #endif // SE1_D3D
+ #ifdef SE1_VULKAN
+   GAT_VK   =  1,     // Vulkan
+-  //GAT_RT   =  2,     // Vulkan ray tracing
++  GAT_RT   =  2,     // Vulkan ray tracing
+ #endif // SE1_VULKAN
+ 
+   GAT_CURRENT = 9,   // current API
+@@ -87,7 +92,7 @@ __forceinline bool GfxValidApi(GfxAPIType eAPI)
+   return(eAPI==GAT_OGL || eAPI==GAT_D3D || eAPI==GAT_NONE);
+ #else
+ #ifdef SE1_VULKAN
+-  return(eAPI==GAT_OGL || eAPI==GAT_VK || eAPI==GAT_NONE);
++  return(eAPI==GAT_OGL || eAPI==GAT_VK || eAPI==GAT_RT || eAPI==GAT_NONE);
+ #else
+   return(eAPI==GAT_OGL || eAPI==GAT_NONE);
+ #endif
+@@ -142,12 +147,12 @@ enum VtxType
+ class ENGINE_API CGfxLibrary
+ {
+ public:
+-  CGfxAPI gl_gaAPI[2];
++  CGfxAPI gl_gaAPI[3];
+   CViewPort *gl_pvpActive;   // active viewport
+   //HINSTANCE  gl_hiDriver;    // DLL handle
+   CDynamicLoader *gl_hiDriver;     // DLL handle
+ 
+-  GfxAPIType   gl_eCurrentAPI;  // (0=none, 1=OpenGL, 2=DirectX8, 2=Vulkan) 
++  GfxAPIType   gl_eCurrentAPI;  // (-1=none, 0=OpenGL, 1=DirectX8, 1=Vulkan, 2=VulkanRayTracing) 
+   CDisplayMode gl_dmCurrentDisplayMode;
+   INDEX gl_iCurrentAdapter;
+   INDEX gl_iCurrentDepth; 
+@@ -156,6 +161,7 @@ public:
+ 
+ #ifdef SE1_VULKAN
+   SvkMain *gl_SvkMain;
++  SSRT::SSRTMain *gl_SSRT;
+ #endif
+ 
+ #ifdef SE1_D3D
+@@ -252,6 +258,18 @@ private:
+   void SwapBuffers_Vulkan();
+   void SetViewport_Vulkan(float leftUpperX, float leftUpperY, float width, float height, float minDepth, float maxDepth);
+ 
++  // Vulkan ray tracing
++  void InitShellVariables_RayTracing();
++  BOOL InitDriver_RayTracing();
++  void InitContext_RayTracing();
++  void EndDriver_RayTracing();
++  BOOL SetCurrentViewport_RayTracing(CViewPort *pvp);
++  void StartFrame_RayTracing(CRaster *pRaster);
++  void EndFrame_RayTracing();
++  void SetViewport_RayTracing(float leftUpperX, float leftUpperY, float width, float height, float minDepth, float maxDepth);
++public:
++  void NotifyGameStoppedSafe_RayTracing();
++
+ public:
+ 
+   // common
+@@ -309,7 +327,7 @@ public:
+ #endif // SE1_D3D
+ #ifdef SE1_VULKAN
+     if (eAPI == GAT_VK) return (gl_gaAPI[1].ga_ctAdapters > 0);
+-    //if (eAPI == GAT_RT) return (gl_gaAPI[2].ga_ctAdapters > 0);
++    if (eAPI == GAT_RT) return (gl_gaAPI[2].ga_ctAdapters > 0);
+ #endif // SE1_VULKAN
+     return FALSE;
+   };
+diff --git a/SamTFE/Sources/Engine/Graphics/Gfx_wrapper.cpp b/SamTFE/Sources/Engine/Graphics/Gfx_wrapper.cpp
+index 8d70c77801b96d77be4f0b2ae41aa7e2df5b2510..5c7600bbb446b01efd8530956627b1230596d2a0 100644
+--- a/SamTFE/Sources/Engine/Graphics/Gfx_wrapper.cpp
++++ b/SamTFE/Sources/Engine/Graphics/Gfx_wrapper.cpp
+@@ -224,12 +224,17 @@ __extern void UpdateLODBias( const FLOAT fLODBias)
+ { 
+   // check API
+   const GfxAPIType eAPI = _pGfx->gl_eCurrentAPI;
++
++  if (eAPI == GAT_RT)
++  {
++    return;
++  }
++
+   ASSERT( GfxValidApi(eAPI) );
+ 
+ #ifdef SE1_VULKAN
+   if (eAPI == GAT_VK)
+   {
+-    // TODO: Vulkan: texture lod
+     // force default lod bias
+     _fCurrentLODBias = SVK_SAMPLER_LOD_BIAS;
+     return;
+@@ -485,6 +490,12 @@ __extern SLONG gfxGetTextureSize( ULONG ulTexObject, BOOL bHasMipmaps/*=TRUE*/)
+ 
+   // determine API
+   const GfxAPIType eAPI = _pGfx->gl_eCurrentAPI;
++
++  if (eAPI == GAT_RT)
++  {
++    return 0;
++  }
++
+   ASSERT( GfxValidApi(eAPI) );
+   SLONG slMipSize;
+ 
+@@ -555,7 +566,6 @@ __extern INDEX gfxGetTexturePixRatio( ULONG ulTextureObject)
+ #ifdef SE1_VULKAN
+   else if (eAPI == GAT_VK)
+   {
+-    // TODO (statistics): Vulkan bytes/pixels ratio for uploaded texture 
+     return 4;
+   }
+ #endif // SE1_VULKAN
+@@ -574,9 +584,8 @@ __extern INDEX gfxGetFormatPixRatio( ULONG ulTextureFormat)
+   else if( eAPI==GAT_D3D) return GetFormatPixRatio_D3D( (D3DFORMAT)ulTextureFormat);
+ #endif // SE1_D3D
+ #ifdef SE1_VULKAN
+-  else if (eAPI == GAT_VK)
++  else if (eAPI == GAT_VK || eAPI == GAT_RT)
+   {
+-    // TODO (statistics): Vulkan format size for statistics
+     return 4;
+   }
+ #endif // SE1_VULKAN
+@@ -763,6 +772,7 @@ extern ULONG gfxGetColorMask(void)
+ #include "Gfx_wrapper_OpenGL.cpp"
+ #include "Gfx_wrapper_Direct3D.cpp"
+ #include "Gfx_wrapper_Vulkan.cpp"
++#include "Gfx_wrapper_Raytracing.cpp"
+ 
+ 
+ 
+@@ -945,6 +955,55 @@ __extern void GFX_SetFunctionPointers( INDEX iAPI)
+     gfxLockArrays           = &svk_LockArrays;
+     gfxSetColorMask         = &svk_SetColorMask;
+   }
++  else if (iAPI == (INDEX)GAT_RT)
++  {
++    gfxEnableDepthWrite     = &ssrt_void;
++    gfxEnableDepthBias      = &ssrt_void;
++    gfxEnableDepthTest      = &ssrt_void;
++    gfxEnableAlphaTest      = &ssrt_void;
++    gfxEnableBlend          = &ssrt_void;
++    gfxEnableDither         = &ssrt_void;
++    gfxEnableTexture        = &ssrt_void;
++    gfxEnableClipping       = &ssrt_void;
++    gfxEnableClipPlane      = &ssrt_void;
++    gfxEnableTruform        = &ssrt_void;
++    gfxDisableDepthWrite    = &ssrt_void;
++    gfxDisableDepthBias     = &ssrt_void;
++    gfxDisableDepthTest     = &ssrt_void;
++    gfxDisableAlphaTest     = &ssrt_void;
++    gfxDisableBlend         = &ssrt_void;
++    gfxDisableDither        = &ssrt_void;
++    gfxDisableTexture       = &ssrt_void;
++    gfxDisableClipping      = &ssrt_void;
++    gfxDisableClipPlane     = &ssrt_void;
++    gfxDisableTruform       = &ssrt_void;
++    gfxBlendFunc            = &ssrt_BlendFunc;
++    gfxDepthFunc            = &ssrt_DepthFunc;
++    gfxDepthRange           = &ssrt_DepthRange;
++    gfxCullFace             = &ssrt_CullFace;
++    gfxFrontFace            = &ssrt_CullFace;
++    gfxClipPlane            = &ssrt_ClipPlane;
++    gfxSetOrtho             = &ssrt_SetOrtho;
++    gfxSetFrustum           = &ssrt_SetFrustum;
++    gfxSetTextureMatrix     = &ssrt_SetTextureMatrix;
++    gfxSetViewMatrix        = &ssrt_SetViewMatrix;
++    gfxPolygonMode          = &ssrt_PolygonMode;
++    gfxSetTextureWrapping   = &ssrt_SetTextureWrapping;
++    gfxSetTextureModulation = &ssrt_SetTextureModulation;
++    gfxGenerateTexture      = &ssrt_GenerateTexture;
++    gfxDeleteTexture        = &ssrt_DeleteTexture;
++    gfxSetVertexArray       = &ssrt_SetVertexArray;  
++    gfxSetNormalArray       = &ssrt_SetNormalArray;  
++    gfxSetTexCoordArray     = &ssrt_SetTexCoordArray;
++    gfxSetColorArray        = &ssrt_SetColorArray;   
++    gfxDrawElements         = &ssrt_DrawElements;    
++    gfxSetConstantColor     = &ssrt_SetConstantColor;
++    gfxEnableColorArray     = &ssrt_void;
++    gfxDisableColorArray    = &ssrt_void;
++    gfxFinish               = &ssrt_void;
++    gfxLockArrays           = &ssrt_void;
++    gfxSetColorMask         = &ssrt_SetColorMask;
++  }
+ #endif // SE1_VULKAN
+   // NONE!
+   else
+diff --git a/SamTFE/Sources/Engine/Graphics/ShadowMap.cpp b/SamTFE/Sources/Engine/Graphics/ShadowMap.cpp
+index 1ab3edad68f1549b9cd7ecc9e5a869bc154b1448..ff8fa2c3889cc4a51901a9d87039db0cd2eb25d7 100644
+--- a/SamTFE/Sources/Engine/Graphics/ShadowMap.cpp
++++ b/SamTFE/Sources/Engine/Graphics/ShadowMap.cpp
+@@ -546,6 +546,11 @@ void CShadowMap::Prepare(void)
+ // provide the data for uploading 
+ void CShadowMap::SetAsCurrent(void)
+ {
++  if (_pGfx->gl_eCurrentAPI == GAT_RT)
++  {
++    return;
++  }
++
+   ASSERT( sm_pulCachedShadowMap!=NULL && sm_iFirstCachedMipLevel<31);
+ 
+   // eventually re-adjust LOD bias
+diff --git a/SamTFE/Sources/Engine/Graphics/Texture.cpp b/SamTFE/Sources/Engine/Graphics/Texture.cpp
+index b7334ec0ae5d1b50b34045c35eb60aa285e88d7b..eeb233a17b90da5e77dde88fd395504400f87f78 100644
+--- a/SamTFE/Sources/Engine/Graphics/Texture.cpp
++++ b/SamTFE/Sources/Engine/Graphics/Texture.cpp
+@@ -94,6 +94,17 @@ extern void DetermineSupportedTextureFormats( GfxAPIType eAPI)
+     // grayscale
+     TS.ts_tfL8      = VK_FORMAT_R8G8B8A8_UNORM;
+   }
++  if (eAPI == GAT_RT)
++  {
++    // won't be used, so set just any number
++    TS.ts_tfRGBA8 = 1;
++    TS.ts_tfRGB8 = 1;
++    TS.ts_tfRGB5 = 1;
++    TS.ts_tfRGBA4 = 1;
++    TS.ts_tfRGB5A1 = 1;
++    TS.ts_tfLA8 = 1;
++    TS.ts_tfL8 = 1;
++  }
+ #endif // SE1_VULKAN
+ }
+ 
+@@ -1207,6 +1218,13 @@ void CTextureData::SetAsCurrent( INDEX iFrameNo/*=0*/, BOOL bForceUpload/*=FALSE
+   // check API
+   const GfxAPIType eAPI = _pGfx->gl_eCurrentAPI;
+   ASSERT(GfxValidApi(eAPI));
++
++  // RT: using cutsom SetAsCurrent in RTTextures.cpp
++  if (eAPI == GAT_RT)
++  {
++    return;
++  }
++
+   ASSERT( iFrameNo<td_ctFrames);
+   BOOL bNeedUpload = bForceUpload;
+   BOOL bNoDiscard  = TRUE;
+@@ -1475,8 +1493,13 @@ void CTextureData::Unbind(void)
+       ASSERT( td_ulProbeObject==NONE);
+       return;
+     }
+-    for( INDEX iFrame=0; iFrame<td_ctFrames; iFrame++) gfxDeleteTexture( td_pulObjects[iFrame]);
+-    FreeMemory( td_pulObjects);
++    // RT: only one handle is stored for animated textures
++    if (_pGfx->gl_eCurrentAPI == GAT_RT) {
++      gfxDeleteTexture(td_ulObject);
++    } else {
++      for( INDEX iFrame=0; iFrame<td_ctFrames; iFrame++) gfxDeleteTexture( td_pulObjects[iFrame]);
++      FreeMemory( td_pulObjects);
++    }
+     td_pulObjects = NULL;
+   } else { // single-frame
+     // only if bound
+@@ -1758,7 +1781,16 @@ BOOL CTextureData::IsAutoFreed(void)
+ SLONG CTextureData::GetUsedMemory(void)
+ {
+   // readout texture object
+-  ULONG ulTexObject = (td_ctFrames>1) ? td_pulObjects[0] : td_ulObject;
++  ULONG ulTexObject = td_ulObject;
++
++  if (td_ctFrames > 1)
++  {
++    // RT: td_pulObjects is empty
++    if (_pGfx->gl_eCurrentAPI != GAT_RT)
++    {
++      ulTexObject = td_pulObjects[0];
++    }
++  }
+ 
+   // add structure size and anim block size
+   SLONG slUsed = sizeof(*this) + CAnimData::GetUsedMemory()-sizeof(CAnimData);
+diff --git a/SamTFE/Sources/Engine/Models/Model.cpp b/SamTFE/Sources/Engine/Models/Model.cpp
+index 5c2abb061caa349ab6fba8d64127f2704e3538cc..815fc24287d31470a56d6aa32cd2e79584a84ba3 100644
+--- a/SamTFE/Sources/Engine/Models/Model.cpp
++++ b/SamTFE/Sources/Engine/Models/Model.cpp
+@@ -1759,6 +1759,9 @@ void CModelData::Read_t( CTStream *pFile) // throw char *
+   // precalculate rendering data
+   extern void PrepareModelForRendering(CModelData &md);
+   PrepareModelForRendering(*this);
++
++  extern void RT_FixModelNormals(CModelData *pModelData);
++  RT_FixModelNormals(this);
+ }
+ 
+ 
+diff --git a/SamTFE/Sources/Engine/Models/RenderModel.cpp b/SamTFE/Sources/Engine/Models/RenderModel.cpp
+index 7b62f37d7eaecfccdfff2b21a7ab04464cc560a5..60806ba1b2787b92a1a018bb44e79f581adce5d2 100644
+--- a/SamTFE/Sources/Engine/Models/RenderModel.cpp
++++ b/SamTFE/Sources/Engine/Models/RenderModel.cpp
+@@ -26,6 +26,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #include <Engine/Base/Lists.inl>
+ #include <Engine/Math/OBBox.h>
+ 
++#include <Engine/Raytracing/SSRT.h>
++
+ #include <Engine/Base/ListIterator.inl>
+ #include <Engine/Templates/StaticStackArray.cpp>
+ 
+@@ -52,6 +54,12 @@ static enum FPUPrecisionType _fpuOldPrecision;
+ // begin/end model rendering to screen
+ void BeginModelRenderingView( CAnyProjection3D &prProjection, CDrawPort *pdp)
+ {
++  // ignore for RT
++  if (_pGfx->gl_eCurrentAPI == GAT_RT)
++  {
++    return;
++  }
++
+   ASSERT( _iRenderingType==0 && _pdp==NULL);
+ 
+   // set 3D projection
+@@ -86,6 +94,12 @@ void BeginModelRenderingView( CAnyProjection3D &prProjection, CDrawPort *pdp)
+ 
+ void EndModelRenderingView( BOOL bRestoreOrtho/*=TRUE*/)
+ {
++  // ignore for RT
++  if (_pGfx->gl_eCurrentAPI == GAT_RT)
++  {
++    return;
++  }
++
+   ASSERT( _iRenderingType==1 && _pdp!=NULL);
+   // assure that FPU precision was low all the model rendering time, then revert to old FPU precision
+   ASSERT( GetFPUPrecision()==FPT_24BIT);
+@@ -459,6 +473,25 @@ static void RenderWireframeBox( FLOAT3D vMinVtx, FLOAT3D vMaxVtx, COLOR col)
+ // setup CRenderModel class for rendering one model and eventually it's shadow(s)
+ void CModelObject::SetupModelRendering( CRenderModel &rm)
+ {
++  // weapons are rendered using this function directly from PlayerWeapons.es,
++  // so if ray tracing is enabled and it's a weapon, add it to SSRT
++  if (_pGfx->gl_eCurrentAPI == GAT_RT)
++  {
++    if (rm.rm_ulFlags & RMF_WEAPON)
++    {
++      SSRT::CFirstPersonModelInfo fpInfo = {};
++      fpInfo.modelObject = this;
++      fpInfo.renderModel = &rm;
++      fpInfo.fovH = ((CPerspectiveProjection3D &)_aprProjection).FOVR();
++
++      // RenderModel(..) will be executed there
++      _pGfx->gl_SSRT->ProcessFirstPersonModel(fpInfo);
++    }
++
++    return;
++  }
++
++
+   _sfStats.IncrementCounter( CStatForm::SCI_MODELS);
+   _pfModelProfile.StartTimer( CModelProfile::PTI_INITMODELRENDERING);
+   _pfModelProfile.IncrementTimerAveragingCounter( CModelProfile::PTI_INITMODELRENDERING);
+@@ -576,9 +609,16 @@ void CModelObject::SetupModelRendering( CRenderModel &rm)
+ 
+ // render model
+ void CModelObject::RenderModel( CRenderModel &rm)
+-{
++{ 
++  if (_pGfx->gl_eCurrentAPI == GAT_RT)
++  {
++    // Note: weapons are processed in SetupModelRendering()
++
++    return;
++  }
++
+   // skip invisible models
+-  if( mo_Stretch == FLOAT3D(0,0,0)) return;
++  if (mo_Stretch == FLOAT3D(0, 0, 0)) return;
+ 
+   _pfModelProfile.StartTimer( CModelProfile::PTI_RENDERMODEL);
+   _pfModelProfile.IncrementTimerAveragingCounter( CModelProfile::PTI_RENDERMODEL);
+@@ -645,6 +685,12 @@ void CModelObject::RenderShadow( CRenderModel &rm, const CPlacement3D &plLight,
+                                  const FLOAT fFallOff, const FLOAT fHotSpot, const FLOAT fIntensity,
+                                  const FLOATplane3D &plShadowPlane)
+ {
++  // ignore for RT
++  if (_pGfx->gl_eCurrentAPI == GAT_RT)
++  {
++    return;
++  }
++
+   // if shadows are not rendered for current mip or model is half/full face-forward, do nothing
+   if( !HasShadow(rm.rm_iMipLevel)
+    || (rm.rm_pmdModelData->md_Flags&(MF_FACE_FORWARD|MF_HALF_FACE_FORWARD))) return;
+diff --git a/SamTFE/Sources/Engine/Models/RenderModel_View.cpp b/SamTFE/Sources/Engine/Models/RenderModel_View.cpp
+index fbd006744984fb1da79230a3175c27c30bd8a77d..90c0ef681d5bdc0e17a20463e0f4d292d8083102 100644
+--- a/SamTFE/Sources/Engine/Models/RenderModel_View.cpp
++++ b/SamTFE/Sources/Engine/Models/RenderModel_View.cpp
+@@ -58,22 +58,22 @@ static INDEX _icol=0;
+ 
+ 
+ // mip arrays
+-static CStaticStackArray<GFXVertex3>  _avtxMipBase;
+-static CStaticStackArray<GFXTexCoord> _atexMipBase;  // for reflection and specular
+-static CStaticStackArray<GFXNormal3>  _anorMipBase;
+-static CStaticStackArray<GFXColor>    _acolMipBase;
++CStaticStackArray<GFXVertex3>  _avtxMipBase;
++CStaticStackArray<GFXTexCoord> _atexMipBase;  // for reflection and specular
++CStaticStackArray<GFXNormal3>  _anorMipBase;
++CStaticStackArray<GFXColor>    _acolMipBase;
+ 
+-static CStaticStackArray<GFXTexCoord> _atexMipFogy;
+-static CStaticStackArray<UBYTE>       _ashdMipFogy;
+-static CStaticStackArray<FLOAT>       _atx1MipHaze;
+-static CStaticStackArray<UBYTE>       _ashdMipHaze;
++CStaticStackArray<GFXTexCoord> _atexMipFogy;
++CStaticStackArray<UBYTE>       _ashdMipFogy;
++CStaticStackArray<FLOAT>       _atx1MipHaze;
++CStaticStackArray<UBYTE>       _ashdMipHaze;
+ 
+ // surface arrays
+-static CStaticStackArray<GFXVertex4>  _avtxSrfBase;
+-static CStaticStackArray<GFXNormal4>  _anorSrfBase;  // normals for Truform!
+-static CStaticStackArray<GFXTexCoord> _atexSrfBase;
+-static CStaticStackArray<GFXTexCoord> _atexSrfBump; // Bump maping
+-static CStaticStackArray<GFXColor>    _acolSrfBase;
++CStaticStackArray<GFXVertex4>  _avtxSrfBase;
++CStaticStackArray<GFXNormal4>  _anorSrfBase;  // normals for Truform!
++CStaticStackArray<GFXTexCoord> _atexSrfBase;
++CStaticStackArray<GFXTexCoord> _atexSrfBump; // Bump maping
++CStaticStackArray<GFXColor>    _acolSrfBase;
+ 
+ // shadows arrays
+ static CStaticStackArray<FLOAT>        _aooqMipShad;
+@@ -82,9 +82,9 @@ static CStaticStackArray<GFXTexCoord4> _atx4SrfShad;
+ 
+ // pointers to arrays for quicker access
+ static GFXColor    *pcolSrfBase;
+-static GFXColor    *pcolMipBase;
+-static GFXVertex3  *pvtxMipBase;
+-static GFXNormal3  *pnorMipBase;
++GFXColor    *pcolMipBase;
++GFXVertex3  *pvtxMipBase;
++GFXNormal3  *pnorMipBase;
+ static GFXTexCoord *ptexMipBase;
+ static GFXTexCoord *ptexMipFogy;
+ static UBYTE       *pshdMipFogy;
+@@ -95,8 +95,8 @@ static UWORD       *puwSrfToMip;
+ 
+ // misc
+ static ULONG _ulColorMask = 0;
+-static INDEX _ctAllMipVx  = 0;
+-static INDEX _ctAllSrfVx  = 0;
++INDEX _ctAllMipVx  = 0;
++INDEX _ctAllSrfVx  = 0;
+ static BOOL  _bFlatFill   = FALSE;
+ static BOOL  _bHasBump    = FALSE;
+ static SLONG _slLR=0, _slLG=0, _slLB=0;
+@@ -132,7 +132,7 @@ static __forceinline void SetCurrentTexture( CTextureData *ptd, INDEX iFrame)
+ 
+ 
+ // reset model vertex buffers
+-static void ResetVertexArrays(void)
++void ResetVertexArrays(void)
+ {
+   _avtxMipBase.PopAll();
+   _atexMipBase.PopAll();
+@@ -426,7 +426,7 @@ static int qsort_CompareSurfaceDiffuseTypes( const void *pSrf1, const void *pSrf
+ 
+ 
+ // prepare mip model's array for OpenGL
+-static void PrepareModelMipForRendering( CModelData &md, INDEX iMip)
++void PrepareModelMipForRendering( CModelData &md, INDEX iMip)
+ {
+   ModelMipInfo &mmi = md.md_MipInfos[iMip];
+   mmi.mmpi_ulLayerFlags = MMI_OPAQUE|MMI_TRANSLUCENT; // initially entire model can be both opaque and translucent
+@@ -1084,7 +1084,7 @@ static void AttenuateColor( const UBYTE *pshdMip, const INDEX ctVertices)
+ 
+ 
+ // unpack vertices (and eventually normals) of one frame
+-static void UnpackFrame( CRenderModel &rm, BOOL bKeepNormals)
++void UnpackFrame( CRenderModel &rm, BOOL bKeepNormals)
+ {
+   _pfModelProfile.StartTimer( CModelProfile::PTI_VIEW_INIT_UNPACK);
+   _pfModelProfile.IncrementTimerAveragingCounter( CModelProfile::PTI_VIEW_INIT_UNPACK, _ctAllMipVx);
+@@ -1376,7 +1376,7 @@ vtxNext16L:
+         const FLOAT fNY = Lerp( +fSinP0,        +fSinP1,        fLerpRatio);
+         const FLOAT fNZ = Lerp( -fCosH0*fCosP0, -fCosH1*fCosP1, fLerpRatio);
+         // store vertex shade
+-        pswMipCol[iMipVx] = FloatToInt(fNX*fLightObjX + fNY*fLightObjY + fNZ*fLightObjZ);
++        pswMipCol[iMipVx] = FloatToInt(fNX *fLightObjX + fNY * fLightObjY + fNZ * fLightObjZ);
+         // store lerped normal (if needed)
+         if( bKeepNormals) {
+           pnorMipBase[iMipVx].nx = fNX;
+diff --git a/SamTFE/Sources/Engine/Network/Network.cpp b/SamTFE/Sources/Engine/Network/Network.cpp
+index 8d13d44f50f60f518d2831d5e759747bff265b13..660866a312216c82476c5745fd60d36e2987e474 100644
+--- a/SamTFE/Sources/Engine/Network/Network.cpp
++++ b/SamTFE/Sources/Engine/Network/Network.cpp
+@@ -1153,6 +1153,12 @@ void CNetworkLibrary::Load_t(const CTFileName &fnmGame) // throw char *
+     // start gathering CRCs
+     InitCRCGather();
+   }
++  
++  // RT: Note: added setting value for pwoCurrentWorld variable, because 
++  // SSRT checks if this value isn't null for determining if a scene should be destroyed.
++  // It seams that the lack of this setting was a bug
++  // SSTRE: Classic-VK keeps the current world as a typed pointer in CShell
++  _pShell->SetCurrentWorld(&ga_World);
+ 
+   // initialize server
+   ga_srvServer.Start_t();
+@@ -1556,6 +1562,9 @@ void CNetworkLibrary::StopGame(void)
+   ga_World.DeletePredictors();
+   ga_World.Clear();
+ 
++  // bad way to notify RT about loading save
++  _pGfx->NotifyGameStoppedSafe_RayTracing();
++
+   // free default state if existing
+   if (ga_pubDefaultState!=NULL) {
+     FreeMemory(ga_pubDefaultState);
+diff --git a/SamTFE/Sources/Engine/Rendering/Render.cpp b/SamTFE/Sources/Engine/Rendering/Render.cpp
+index ef5187712747a904f7c69fbc418620b394be9b85..d2284fb8cdce94f5cd21b9dc02950693f86090cf 100644
+--- a/SamTFE/Sources/Engine/Rendering/Render.cpp
++++ b/SamTFE/Sources/Engine/Rendering/Render.cpp
+@@ -59,6 +59,8 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #include <Engine/Templates/StaticStackArray.cpp>
+ #include <Engine/Templates/DynamicStackArray.cpp>
+ 
++#include <Engine/Raytracing/SSRT.h>
++
+ extern BOOL _bSomeDarkExists;
+ extern INDEX d3d_bAlternateDepthReads;
+ 
+@@ -968,7 +970,141 @@ void RenderView(CWorld &woWorld, CEntity &enViewer,
+     woWorld.wo_pecWorldBaseClass->ec_pdecDLLClass->dec_OnWorldRender(&woWorld);
+   }
+ 
+-  if(_wrpWorldRenderPrefs.GetShadowsType() == CWorldRenderPrefs::SHT_FULL)
++  if (_pGfx->gl_eCurrentAPI == GAT_RT)
++  {
++    SSRT::CWorldRenderingInfo renderInfo = {};
++    renderInfo.pWorld = &woWorld;
++    renderInfo.pViewerEntity = &enViewer;
++    renderInfo.screenWidth = dpDrawport.GetWidth();
++    renderInfo.screenHeight = dpDrawport.GetHeight();
++    renderInfo.screenX = dpDrawport.dp_MinI;
++    renderInfo.screenY = dpDrawport.dp_MinJ;
++    renderInfo.pDrawport = &dpDrawport;
++
++    // RT: copied from CDrawPort::SetProjection which is called from BeginModelRenderingView(..)
++    {
++      // copy projection
++
++      {
++        renderInfo.prProjection = prProjection;
++
++        renderInfo.prProjection->ObjectPlacementL() = CPlacement3D(FLOAT3D(0, 0, 0), ANGLE3D(0, 0, 0));
++        renderInfo.prProjection->Prepare();
++      }
++
++
++      {
++        renderInfo.prProjectionBackground = prProjection;
++        
++        if (woWorld.GetBackgroundViewer() != NULL)
++        {
++          CPlacement3D plViewer = prProjection->ViewerPlacementR();
++          plViewer.pl_PositionVector = FLOAT3D(0, 0, 0);
++          CPlacement3D plBcgViewer = woWorld.GetBackgroundViewer()->GetLerpedPlacement();
++          plViewer.RelativeToAbsoluteSmooth(plBcgViewer);
++
++          renderInfo.prProjectionBackground->ViewerPlacementL() = plViewer;
++          renderInfo.prProjectionBackground->ObjectPlacementL() = CPlacement3D(FLOAT3D(0, 0, 0), ANGLE3D(0, 0, 0));
++          renderInfo.prProjectionBackground->FarClipDistanceL() = -1.0f;
++          renderInfo.prProjectionBackground->DepthBufferNearL() = 0.9f;
++          renderInfo.prProjectionBackground->DepthBufferFarL() = 1.0f;
++          renderInfo.prProjectionBackground->TurnOffWarpPlane();  // background never needs warp-plane clipping
++          renderInfo.prProjectionBackground->Prepare();
++        }
++      }
++
++
++      if (renderInfo.prProjection.IsIsometric())
++      {
++        ASSERTALWAYS("Only perspective projections are allowed for ray tracing");
++
++        auto &ipr = static_cast<const CIsometricProjection3D&>(*renderInfo.prProjection);
++        const FLOAT2D vMin = ipr.pr_ScreenBBox.Min() - ipr.pr_ScreenCenter;
++        const FLOAT2D vMax = ipr.pr_ScreenBBox.Max() - ipr.pr_ScreenCenter;
++        const FLOAT fFactor = 1.0f / (ipr.ipr_ZoomFactor * ipr.pr_fViewStretch);
++        const FLOAT fNear = ipr.pr_NearClipDistance;
++        const FLOAT fLeft = +vMin(1) * fFactor;
++        const FLOAT fRight = +vMax(1) * fFactor;
++        const FLOAT fTop = -vMin(2) * fFactor;
++        const FLOAT fBottom = -vMax(2) * fFactor;
++        // if far clip plane is not specified use maximum expected dimension of the world
++        FLOAT fFar = ipr.pr_FarClipDistance;
++        if (fFar < 0) fFar = 1E5f;  // max size 32768, 3D (sqrt(3)), rounded up
++
++        // calculate projection matrix
++        extern void Svk_MatOrtho(float *result, float fLeft, float fRight, float fBottom, float fTop, float fNear, float fFar);
++        Svk_MatOrtho(renderInfo.projectionMatrix, fLeft, fRight, fTop, fBottom, fNear, fFar);
++      }
++      else
++      {
++        ASSERT(renderInfo.prProjection.IsPerspective());
++        const auto &ppr = static_cast<const CPerspectiveProjection3D&>(*renderInfo.prProjection);
++        const FLOAT fNear = ppr.pr_NearClipDistance;
++        const FLOAT fLeft = ppr.pr_plClipL(3) / ppr.pr_plClipL(1) * fNear;
++        const FLOAT fRight = ppr.pr_plClipR(3) / ppr.pr_plClipR(1) * fNear;
++        const FLOAT fTop = ppr.pr_plClipU(3) / ppr.pr_plClipU(2) * fNear;
++        const FLOAT fBottom = ppr.pr_plClipD(3) / ppr.pr_plClipD(2) * fNear;
++        // if far clip plane is not specified use maximum expected dimension of the world
++        FLOAT fFar = ppr.pr_FarClipDistance;
++        if (fFar < 0) fFar = 1E5f;  // max size 32768, 3D (sqrt(3)), rounded up
++
++        renderInfo.fovH = ppr.FOVR();
++
++        // calculate projection matrix
++        extern void Svk_MatFrustum(float *result, float fLeft, float fRight, float fBottom, float fTop, float fNear, float fFar);
++        Svk_MatFrustum(renderInfo.projectionMatrix, fLeft, fRight, fTop, fBottom, fNear, fFar);
++      }
++    }
++    
++    // create view matrix
++    {
++      const CPlacement3D &viewerPl = prProjection->ViewerPlacementR();
++      const FLOAT3D &v = viewerPl.pl_PositionVector;
++      const ANGLE3D &r = viewerPl.pl_OrientationAngle;
++
++      // view position, rotation
++      {
++        renderInfo.cameraPosition = v;
++        MakeRotationMatrix(renderInfo.cameraRotation, r);
++      }
++
++      auto fillColumnMajor = [] (float *glm, const FLOATmatrix3D &m, const FLOAT3D &v)
++      {
++        glm[0] = m(1, 1);  glm[4] = m(1, 2);  glm[8] = m(1, 3);   glm[12] = v(1);
++        glm[1] = m(2, 1);  glm[5] = m(2, 2);  glm[9] = m(2, 3);   glm[13] = v(2);
++        glm[2] = m(3, 1);  glm[6] = m(3, 2);  glm[10] = m(3, 3);  glm[14] = v(3);
++        glm[3] = 0;        glm[7] = 0;        glm[11] = 0;        glm[15] = 1;
++      };
++
++      // view
++      {
++        FLOATmatrix3D m;
++        MakeInverseRotationMatrix(m, r);
++
++        // inverse Y axis for Vulkan
++        m(2, 1) = -m(2, 1);
++        m(2, 2) = -m(2, 2);
++        m(2, 3) = -m(2, 3);
++
++        // 4th column of (T*M)^-1 = M^(-1)*T^(-1),
++        FLOAT3D t =
++        {
++          -v % FLOAT3D(m(1, 1), m(1, 2), m(1, 3)),
++          -v % FLOAT3D(m(2, 1), m(2, 2), m(2, 3)),
++          -v % FLOAT3D(m(3, 1), m(3, 2), m(3, 3))
++        };
++
++        fillColumnMajor(renderInfo.viewMatrix, m, t);
++      }
++    }
++
++    _pGfx->gl_SSRT->ProcessWorld(renderInfo);
++
++    // don't render world using rasterization
++    return;
++  }
++
++  if (_wrpWorldRenderPrefs.GetShadowsType() == CWorldRenderPrefs::SHT_FULL)
+   {
+     // calculate all non directional shadows that are not up to date
+     woWorld.CalculateNonDirectionalShadows();
+diff --git a/SamTFE/Sources/Engine/Rendering/Render_internal.h b/SamTFE/Sources/Engine/Rendering/Render_internal.h
+index eb818e5e2c97b79d488d5c51a99d3615461579b0..c17e35b0072e2fe5c03c557de065bb701f997213 100644
+--- a/SamTFE/Sources/Engine/Rendering/Render_internal.h
++++ b/SamTFE/Sources/Engine/Rendering/Render_internal.h
+@@ -30,6 +30,24 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #include <Engine/Brushes/Brush.h>
+ #include <Engine/Brushes/BrushTransformed.h>
+ 
++
++extern GFXColor *pcolMipBase;
++extern GFXVertex3 *pvtxMipBase;
++extern GFXNormal3 *pnorMipBase;
++extern CStaticStackArray<GFXVertex3>  _avtxMipBase;
++extern CStaticStackArray<GFXTexCoord> _atexMipBase;
++extern CStaticStackArray<GFXNormal3>  _anorMipBase;
++extern CStaticStackArray<GFXColor>    _acolMipBase;
++
++extern CStaticStackArray<GFXVertex4>  _avtxSrfBase;
++extern CStaticStackArray<GFXNormal4>  _anorSrfBase;
++extern CStaticStackArray<GFXTexCoord> _atexSrfBase;
++extern CStaticStackArray<GFXColor>    _acolSrfBase;
++
++extern void ResetVertexArrays(void);
++extern void PrepareModelMipForRendering(CModelData &md, INDEX iMip);
++
++
+ #undef ALIGNED_NEW_AND_DELETE
+ #ifdef NDEBUG
+ #define ALIGNED_NEW_AND_DELETE(align) \

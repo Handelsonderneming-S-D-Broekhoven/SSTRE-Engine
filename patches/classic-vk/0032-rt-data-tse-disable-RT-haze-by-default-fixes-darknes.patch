@@ -1,0 +1,77 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Sat, 28 Nov 2026 02:51:20 +0100
+Subject: [PATCH] rt(data,tse): disable RT "haze" by default; fixes darkness
+ beyond ~20 m
+
+Root cause of the owner's "fog of war" finding in TSE under RT:
+Serious-Engine-RT marks the camera as "in haze" when it is inside any
+sector that has SE1 haze OR fog (RTModelCulling.cpp RT_CheckViewerInHaze)
+and then renders the frame as if the camera were under water
+(SSRT.cpp: typeOfMediaAroundCamera = RG_MEDIA_TYPE_WATER). RTGL1 applies
+exp(-distance * waterExtinction) (Media.h), with the default extinction
+0.025/0.016/0.011 times density 5, i.e. 0.055-0.125 per metre: about
+8-33 % transmittance at 20 m and near black at 40 m. TFE avoids this by
+setting haze off on most outdoor levels; the TSE table inherited RT's
+generic default (haze on) for all 13 worlds, and TSE worlds use sector
+fog/haze widely.
+
+TSE [defaults] now sets haze = 0 (also the two showcase worlds). SE1
+fog/haze is then not reproduced in RT at all; per-world opt-in with
+haze_ignored_sectors stays possible, as in TFE. Also corrects the
+1_1_Palenque note: the start view differs from raster because the
+player starts under water and RT refracts through the surface.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ SamTSE/SSTRE/RT/WorldTuning.txt | 19 ++++++++++++-------
+ 1 file changed, 12 insertions(+), 7 deletions(-)
+
+diff --git a/SamTSE/SSTRE/RT/WorldTuning.txt b/SamTSE/SSTRE/RT/WorldTuning.txt
+index 7ed633fc1479eae34db81e3a83c76f6300cf0032..c92ebda1ae5ae47bf7c0b5af31725a7beea039e0 100644
+--- a/SamTSE/SSTRE/RT/WorldTuning.txt
++++ b/SamTSE/SSTRE/RT/WorldTuning.txt
+@@ -34,7 +34,12 @@ potential_light_distance_threshold = 2
+ culling_max_sector_depth = 8
+ ignore_dynamic_texcoords = 0
+ sky_type = geometry
+-haze = 1
++# haze = 0 (TSE default, EXP-018 addendum): Serious-Engine-RT treats "camera inside a sector with
++# SE1 haze OR fog" as being under water (RG_MEDIA_TYPE_WATER, extinction = water_extinction *
++# water_density_multiplier, about 0.055-0.125 per metre). TSE worlds use sector fog/haze widely, so
++# with haze = 1 everything beyond ~20 m goes dark. SE1 fog/haze itself is not reproduced in RT.
++# Enable per world only together with haze_ignored_sectors, as TFE does.
++haze = 0
+ 
+ [world 1_0_InTheLastEpisode]
+ # Showcase level (first integrated build). Observed 2026-11-28 (EXP-018): loads and runs in RT,
+@@ -44,15 +49,15 @@ tuned = 0
+ culling_max_sector_depth = 8              # max of TFE's range: favour complete geometry over speed
+ potential_light_distance_threshold = 2    # RT default; TFE raises to 4 only on light-heavy levels
+ flashlight_hint_delay = -1                # no hint: player profiles from the template lack the L binding
+-haze = 1
++haze = 0                                  # see [defaults]: fog/haze sector = water media in RT
+ sky_type = geometry
+ 
+ [world 1_1_Palenque]
+ # Showcase level (first integrated build). Observed 2026-11-28 (EXP-018): path-traced gameplay,
+-# HUD and weapon OK, ~58 FPS (1080p, indicative). KNOWN ARTEFACT: at the start area RT shows sky
+-# where raster draws the distant hillside and trees. Next step: probe culling_max_sector_depth
+-# 16/32 (G:/sstre-tmp/e5/scripts/session-c.ps1, local) and, if unchanged, look for background /
+-# World Base brushes as TFE did (ignore_world_base / mask_sectors). Values below are explicit
++# HUD and weapon OK, ~58 FPS (1080p, indicative). The player starts UNDER WATER in the pool: RT
++# refracts the view through the water surface (sky and hanging plants), raster does not, so
++# the start view differs by design, not by missing geometry (EXP-018 addendum). Values below
++# are explicit
+ # conservative choices [ASM], not play-tested tuning.
+ tuned = 0
+ sun_intensity = 4                         # outdoor daylight jungle: TFE outdoor value
+@@ -60,7 +65,7 @@ sky_color_multiplier = 1
+ culling_max_sector_depth = 8
+ potential_light_distance_threshold = 2
+ flashlight_hint_delay = -1
+-haze = 1                                  # jungle mist: haze allowed (TFE disables it only on desert levels)
++haze = 0                                  # was 1: made everything beyond ~20 m dark (fog sectors -> water media)
+ sky_type = geometry
+ 
+ [world 1_2_Palenque]

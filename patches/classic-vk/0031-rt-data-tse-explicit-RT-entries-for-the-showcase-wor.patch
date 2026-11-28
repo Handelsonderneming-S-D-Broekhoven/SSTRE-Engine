@@ -1,0 +1,55 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Sat, 28 Nov 2026 02:20:52 +0100
+Subject: [PATCH] rt(data,tse): explicit RT entries for the showcase worlds 1_0
+ and 1_1
+
+1_0_InTheLastEpisode and 1_1_Palenque get explicit, conservative values
+(culling depth 8, default light threshold, haze on, geometry sky, no
+flashlight hint) with the observed state recorded in the table: both
+load and run in RT; Palenque shows sky in place of the distant hillside
+at the start area. Still tuned = 0: these are not play-tested values.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ SamTSE/SSTRE/RT/WorldTuning.txt | 25 +++++++++++++++++++++++--
+ 1 file changed, 23 insertions(+), 2 deletions(-)
+
+diff --git a/SamTSE/SSTRE/RT/WorldTuning.txt b/SamTSE/SSTRE/RT/WorldTuning.txt
+index eff09f1bbb3a369fc2c26a1be887566ec53c6580..7ed633fc1479eae34db81e3a83c76f6300cf0032 100644
+--- a/SamTSE/SSTRE/RT/WorldTuning.txt
++++ b/SamTSE/SSTRE/RT/WorldTuning.txt
+@@ -37,10 +37,31 @@ sky_type = geometry
+ haze = 1
+ 
+ [world 1_0_InTheLastEpisode]
+-tuned = 0    # placeholder: generic defaults from [defaults]
++# Showcase level (first integrated build). Observed 2026-11-28 (EXP-018): loads and runs in RT,
++# no crash; the intro has no NETRICSA, gameplay frames not yet reviewed. Values are explicit
++# conservative choices [ASM], not play-tested tuning.
++tuned = 0
++culling_max_sector_depth = 8              # max of TFE's range: favour complete geometry over speed
++potential_light_distance_threshold = 2    # RT default; TFE raises to 4 only on light-heavy levels
++flashlight_hint_delay = -1                # no hint: player profiles from the template lack the L binding
++haze = 1
++sky_type = geometry
+ 
+ [world 1_1_Palenque]
+-tuned = 0    # placeholder: generic defaults from [defaults]
++# Showcase level (first integrated build). Observed 2026-11-28 (EXP-018): path-traced gameplay,
++# HUD and weapon OK, ~58 FPS (1080p, indicative). KNOWN ARTEFACT: at the start area RT shows sky
++# where raster draws the distant hillside and trees. Next step: probe culling_max_sector_depth
++# 16/32 (G:/sstre-tmp/e5/scripts/session-c.ps1, local) and, if unchanged, look for background /
++# World Base brushes as TFE did (ignore_world_base / mask_sectors). Values below are explicit
++# conservative choices [ASM], not play-tested tuning.
++tuned = 0
++sun_intensity = 4                         # outdoor daylight jungle: TFE outdoor value
++sky_color_multiplier = 1
++culling_max_sector_depth = 8
++potential_light_distance_threshold = 2
++flashlight_hint_delay = -1
++haze = 1                                  # jungle mist: haze allowed (TFE disables it only on desert levels)
++sky_type = geometry
+ 
+ [world 1_2_Palenque]
+ tuned = 0    # placeholder: generic defaults from [defaults]

@@ -1,0 +1,319 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Sat, 28 Nov 2026 00:45:03 +0100
+Subject: [PATCH] rt(engine,tse): make ray tracing runtime-optional in the TSE
+ engine
+
+Replays e62b6fcc onto SamTSE: delay-loaded RayTracedGL1.dll with the
+RTGL1Loader probe, non-fatal RT adapter enumeration (Adapter.cpp applies
+cleanly despite the 10-line TFE/TSE difference), and the Release|x64
+Engine.vcxproj additions (RT sources, RTGL1 include/lib, delayimp,
+RG_USE_SURFACE_WIN32). The vcxproj hunks were re-applied by hand because
+TSE's PreprocessorDefinitions lack FIRST_ENCOUNTER, so the TFE context
+did not match.
+
+Ported code: Serious-Engine-RT (https://github.com/sultim-t/Serious-Engine-RT,
+GPL-2.0-only) by Sultim Tsyrendashiev; original copyright notices kept.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ SamTSE/Sources/Engine/Engine.vcxproj          | 42 +++++++--
+ SamTSE/Sources/Engine/Graphics/Adapter.cpp    | 49 +++++++++++
+ .../Sources/Engine/Raytracing/RTGL1Loader.cpp | 86 +++++++++++++++++++
+ .../Sources/Engine/Raytracing/RTGL1Loader.h   | 31 +++++++
+ 4 files changed, 203 insertions(+), 5 deletions(-)
+
+diff --git a/SamTSE/Sources/Engine/Engine.vcxproj b/SamTSE/Sources/Engine/Engine.vcxproj
+index d9d849adef358ae0f13ee36df0bd1393773d3c5a..33f57f31c6c66cd842bd5c922acbeb0c1095aa9e 100755
+--- a/SamTSE/Sources/Engine/Engine.vcxproj
++++ b/SamTSE/Sources/Engine/Engine.vcxproj
+@@ -271,7 +271,7 @@ copy Debug\$(TargetName).lib $(SolutionDir)..\Bin\Debug\ &gt;nul</Command>
+       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
+       <IntrinsicFunctions>true</IntrinsicFunctions>
+       <OmitFramePointers>false</OmitFramePointers>
+-      <PreprocessorDefinitions>SE1_VULKAN;PLATFORM_WIN32;WIN32;NDEBUG;_WINDOWS;_USRDLL;ENGINE_EXPORTS;DIRECT3D_VERSION=0x0800;%(PreprocessorDefinitions)</PreprocessorDefinitions>
++      <PreprocessorDefinitions>SE1_VULKAN;RG_USE_SURFACE_WIN32;PLATFORM_WIN32;WIN32;NDEBUG;_WINDOWS;_USRDLL;ENGINE_EXPORTS;DIRECT3D_VERSION=0x0800;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+       <AssemblerListingLocation>.\Release\</AssemblerListingLocation>
+       <PrecompiledHeaderOutputFile>.\Release\Engine.pch</PrecompiledHeaderOutputFile>
+       <PrecompiledHeader>Use</PrecompiledHeader>
+@@ -331,7 +331,7 @@ copy Release\$(TargetName).lib $(SolutionDir)..\Bin\ &gt;nul</Command>
+       <FavorSizeOrSpeed>Speed</FavorSizeOrSpeed>
+       <IntrinsicFunctions>true</IntrinsicFunctions>
+       <OmitFramePointers>false</OmitFramePointers>
+-      <PreprocessorDefinitions>SE1_VULKAN;PLATFORM_WIN32;WIN32;NDEBUG;_WINDOWS;_USRDLL;ENGINE_EXPORTS;DIRECT3D_VERSION=0x0800;%(PreprocessorDefinitions)</PreprocessorDefinitions>
++      <PreprocessorDefinitions>SE1_VULKAN;RG_USE_SURFACE_WIN32;PLATFORM_WIN32;WIN32;NDEBUG;_WINDOWS;_USRDLL;ENGINE_EXPORTS;DIRECT3D_VERSION=0x0800;%(PreprocessorDefinitions)</PreprocessorDefinitions>
+       <AssemblerListingLocation>.\Release\</AssemblerListingLocation>
+       <PrecompiledHeaderOutputFile>.\Release\Engine.pch</PrecompiledHeaderOutputFile>
+       <PrecompiledHeader>Use</PrecompiledHeader>
+@@ -339,7 +339,7 @@ copy Release\$(TargetName).lib $(SolutionDir)..\Bin\ &gt;nul</Command>
+       <ObjectFileName>.\Release\</ObjectFileName>
+       <ProgramDataBaseFileName>.\Release\</ProgramDataBaseFileName>
+       <DisableSpecificWarnings>4603;4996;4812;4333</DisableSpecificWarnings>
+-      <AdditionalIncludeDirectories>$(VULKAN_SDK)\Include;..\libvorbis\include\;..\libogg\include\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
++      <AdditionalIncludeDirectories>$(RTGL1_SDK_PATH)\Include;$(VULKAN_SDK)\Include;..\libvorbis\include\;..\libogg\include\;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
+     </ClCompile>
+     <Midl>
+       <SuppressStartupBanner>true</SuppressStartupBanner>
+@@ -362,11 +362,12 @@ copy Release\$(TargetName).lib $(SolutionDir)..\Bin\ &gt;nul</Command>
+       <SubSystem>Console</SubSystem>
+       <OutputFile>.\Release\Engine.dll</OutputFile>
+       <ImportLibrary>.\Release\Engine.lib</ImportLibrary>
+-      <AdditionalDependencies>odbc32.lib;odbccp32.lib;DbgHelp.lib;vulkan-1.lib;%(AdditionalDependencies)</AdditionalDependencies>
++      <AdditionalDependencies>odbc32.lib;odbccp32.lib;DbgHelp.lib;vulkan-1.lib;RayTracedGL1.lib;delayimp.lib;%(AdditionalDependencies)</AdditionalDependencies>
+       <GenerateMapFile>true</GenerateMapFile>
+       <IgnoreSpecificDefaultLibraries>libci.lib;%(IgnoreSpecificDefaultLibraries)</IgnoreSpecificDefaultLibraries>
+       <ImageHasSafeExceptionHandlers>false</ImageHasSafeExceptionHandlers>
+-      <AdditionalLibraryDirectories>$(VULKAN_SDK)\Lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
++      <AdditionalLibraryDirectories>$(VULKAN_SDK)\Lib;$(RTGL1_LIB_PATH);%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
++      <DelayLoadDLLs>RayTracedGL1.dll;%(DelayLoadDLLs)</DelayLoadDLLs>
+     </Link>
+     <CustomBuildStep>
+       <Command>copy Release\$(TargetName).dll $(SolutionDir)..\Bin\ &gt;nul
+@@ -1561,6 +1562,37 @@ ecc Engine/Classes/%(Filename).es </Command>
+       <Outputs Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">%(RootDir)%(Directory)\smcScan.cpp;%(Outputs)</Outputs>
+     </CustomBuild>
+   </ItemGroup>
++  <!-- SSTRE: ray tracing backend (from Serious-Engine-RT); x64 only, RTGL1 is delay-loaded -->
++  <ItemGroup>
++    <ClCompile Include="Graphics\Gfx_RayTracing.cpp" />
++    <ClCompile Include="Models\RTModelNormalsFix.cpp" />
++    <ClCompile Include="Raytracing\CustomInfo.cpp" />
++    <ClCompile Include="Raytracing\RTBrushes.cpp" />
++    <ClCompile Include="Raytracing\RTLights.cpp" />
++    <ClCompile Include="Raytracing\RTModelCulling.cpp" />
++    <ClCompile Include="Raytracing\RTModels.cpp" />
++    <ClCompile Include="Raytracing\RTParticles.cpp" />
++    <ClCompile Include="Raytracing\RTTextures.cpp" />
++    <ClCompile Include="Raytracing\SSRT.cpp" />
++    <ClCompile Include="Raytracing\SSRTObjects.cpp" />
++    <ClCompile Include="Raytracing\Scene.cpp" />
++    <ClCompile Include="Raytracing\SceneBrushes.cpp" />
++    <ClCompile Include="Raytracing\TextureUploader.cpp" />
++    <ClCompile Include="Raytracing\Utils.cpp" />
++    <ClCompile Include="Raytracing\RTGL1Loader.cpp" />
++    <ClInclude Include="Raytracing\CustomInfo.h" />
++    <ClInclude Include="Raytracing\GeometryExporter.h" />
++    <ClInclude Include="Raytracing\RTProcessing.h" />
++    <ClInclude Include="Raytracing\SSRT.h" />
++    <ClInclude Include="Raytracing\SSRTGlobals.h" />
++    <ClInclude Include="Raytracing\SSRTObjects.h" />
++    <ClInclude Include="Raytracing\Scene.h" />
++    <ClInclude Include="Raytracing\SceneBrushes.h" />
++    <ClInclude Include="Raytracing\TextureUploader.h" />
++    <ClInclude Include="Raytracing\Utils.h" />
++    <ClInclude Include="Raytracing\RTGL1Loader.h" />
++    <None Include="Graphics\Gfx_wrapper_Raytracing.cpp" />
++  </ItemGroup>
+   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
+   <ImportGroup Label="ExtensionTargets">
+   </ImportGroup>
+diff --git a/SamTSE/Sources/Engine/Graphics/Adapter.cpp b/SamTSE/Sources/Engine/Graphics/Adapter.cpp
+index 2f9b9c019af4bfe14473ec2e8eef9eadfff7bc74..bbd21381aef4557df55fb413d3f1a849cbb646bf 100644
+--- a/SamTSE/Sources/Engine/Graphics/Adapter.cpp
++++ b/SamTSE/Sources/Engine/Graphics/Adapter.cpp
+@@ -25,6 +25,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ 
+ #ifdef SE1_VULKAN
+ #include <Engine/Graphics/Vulkan/VulkanInclude.h>
++#include <Engine/Raytracing/RTGL1Loader.h>
+ #endif
+ 
+ 
+@@ -41,6 +42,46 @@ extern const D3DDEVTYPE d3dDevType;
+ // list of all modes avaliable through CDS
+ static CListHead _lhCDSModes;
+ 
++#ifdef SE1_VULKAN
++// Ray-tracing adapter enumeration, from Serious-Engine-RT (Sultim Tsyrendashiev) InitAPIs.
++// SSTRE change: a GPU without ray tracing is not a fatal error any more; GAT_RT just
++// gets 0 adapters, so the conventional raster APIs keep working.
++static void InitAPIs_RayTracing(CGfxAPI *agaAPI, const VkPhysicalDevice *physDevices, uint32_t ctPhysDevices)
++{
++  INDEX iRTGPU = 0;
++  for (uint32_t iAdapter = 0; iAdapter < ctPhysDevices; iAdapter++)
++  {
++    VkPhysicalDeviceRayTracingPipelineFeaturesKHR rtFeatures = {};
++    rtFeatures.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR;
++
++    VkPhysicalDeviceFeatures2 deviceFeatures2 = {};
++    deviceFeatures2.sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2;
++    deviceFeatures2.pNext = &rtFeatures;
++    vkGetPhysicalDeviceFeatures2(physDevices[iAdapter], &deviceFeatures2);
++
++    if (rtFeatures.rayTracingPipeline)
++    {
++      // if has RT support, then assign info from VK
++      agaAPI[GAT_RT].ga_adaAdapter[iRTGPU] = agaAPI[GAT_VK].ga_adaAdapter[iAdapter];
++      iRTGPU++;
++    }
++  }
++
++  agaAPI[GAT_RT].ga_ctAdapters = iRTGPU;
++  agaAPI[GAT_RT].ga_iCurrentAdapter = 0;
++
++  if (iRTGPU == 0)
++  {
++    CPrintF("No GPU with Vulkan ray tracing found; ray tracing (GAT_RT) is unavailable.\n");
++  }
++  else if (!RTGL1_IsAvailable())
++  {
++    // GPU can ray trace, but the optional RTGL1 library is not installed
++    agaAPI[GAT_RT].ga_ctAdapters = 0;
++  }
++}
++#endif // SE1_VULKAN
++
+ #ifdef PLATFORM_WIN32 // DG: all this code is (currently?) only used for windows.
+ class CResolution {
+ public:
+@@ -267,6 +308,11 @@ void CGfxLibrary::InitAPIs(void)
+   gl_gaAPI[GAT_VK].ga_ctAdapters = ctMaxPhysDevices;
+   gl_gaAPI[GAT_VK].ga_iCurrentAdapter = 0;
+ 
++
++  // SSTRE: enumerate ray-tracing capable adapters for GAT_RT (never fatal)
++  InitAPIs_RayTracing(gl_gaAPI, physDevices, ctMaxPhysDevices);
++
++
+   // destroy temporary instance
+   vkDestroyInstance(tempVkInstance, nullptr);
+ #endif // SE1_VULKAN
+@@ -490,6 +536,9 @@ void CGfxLibrary::InitAPIs(void)
+   gl_gaAPI[GAT_VK].ga_ctAdapters = ctMaxPhysDevices;
+   gl_gaAPI[GAT_VK].ga_iCurrentAdapter = 0;
+ 
++  // SSTRE: enumerate ray-tracing capable adapters for GAT_RT (never fatal)
++  InitAPIs_RayTracing(gl_gaAPI, physDevices, ctMaxPhysDevices);
++
+   // destroy temporary instance
+   vkDestroyInstance(tempVkInstance, nullptr);
+ 
+diff --git a/SamTSE/Sources/Engine/Raytracing/RTGL1Loader.cpp b/SamTSE/Sources/Engine/Raytracing/RTGL1Loader.cpp
+new file mode 100644
+index 0000000000000000000000000000000000000000..0291c2439312b7a404b6b94287d839031105c7da
+--- /dev/null
++++ b/SamTSE/Sources/Engine/Raytracing/RTGL1Loader.cpp
+@@ -0,0 +1,86 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++Copyright (C) 2026 Handelsonderneming S.D. Broekhoven, trading as ITEagle Europe
++
++This program is free software; you can redistribute it and/or modify
++it under the terms of version 2 of the GNU General Public License as published by
++the Free Software Foundation
++
++
++This program is distributed in the hope that it will be useful,
++but WITHOUT ANY WARRANTY; without even the implied warranty of
++MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++GNU General Public License for more details. */
++
++#include <Engine/StdH.h>
++#include <Engine/Base/Console.h>
++#include "RTGL1Loader.h"
++
++#ifdef PLATFORM_WIN32
++
++#include <delayimp.h>
++
++#define RTGL1_DLL_NAME "RayTracedGL1.dll"
++
++static INDEX _iRTGL1State = -1;   // -1 = not probed, 0 = unavailable, 1 = available
++static const char *_strRTGL1Reason = "not probed";
++
++// SEH helper: binds all delay-loaded imports of RayTracedGL1.dll, so a DLL with a
++// mismatching export table is detected here instead of crashing on first use.
++static HRESULT BindAllRTGL1Imports(void)
++{
++  __try {
++    return __HrLoadAllImportsForDll(RTGL1_DLL_NAME);
++  } __except (EXCEPTION_EXECUTE_HANDLER) {
++    return E_FAIL;
++  }
++}
++
++BOOL RTGL1_IsAvailable(void)
++{
++  if (_iRTGL1State >= 0) {
++    return _iRTGL1State == 1;
++  }
++
++  _iRTGL1State = 0;
++
++  // standard DLL search order (application directory first); the module stays loaded,
++  // the delay-load helper then reuses it
++  HMODULE hRTGL1 = LoadLibraryA(RTGL1_DLL_NAME);
++  if (hRTGL1 == NULL) {
++    _strRTGL1Reason = RTGL1_DLL_NAME " not found";
++    CPrintF("Ray tracing unavailable: %s\n", _strRTGL1Reason);
++    return FALSE;
++  }
++
++  if (FAILED(BindAllRTGL1Imports())) {
++    _strRTGL1Reason = RTGL1_DLL_NAME " does not export the expected RTGL1 API";
++    CPrintF("Ray tracing unavailable: %s\n", _strRTGL1Reason);
++    return FALSE;
++  }
++
++  _strRTGL1Reason = "";
++  _iRTGL1State = 1;
++  CPrintF("Ray tracing library " RTGL1_DLL_NAME " loaded.\n");
++  return TRUE;
++}
++
++const char *RTGL1_UnavailableReason(void)
++{
++  return _strRTGL1Reason;
++}
++
++#else // PLATFORM_WIN32
++
++// TODO(SSTRE, EXP-005 M3): Linux needs dlopen() + a function table for the rg*()
++// entry points; until then ray tracing is reported as unavailable.
++BOOL RTGL1_IsAvailable(void)
++{
++  return FALSE;
++}
++
++const char *RTGL1_UnavailableReason(void)
++{
++  return "ray tracing is not implemented on this platform";
++}
++
++#endif // PLATFORM_WIN32
+diff --git a/SamTSE/Sources/Engine/Raytracing/RTGL1Loader.h b/SamTSE/Sources/Engine/Raytracing/RTGL1Loader.h
+new file mode 100644
+index 0000000000000000000000000000000000000000..57d6c694b5290e7356419140063fd8354bb92fac
+--- /dev/null
++++ b/SamTSE/Sources/Engine/Raytracing/RTGL1Loader.h
+@@ -0,0 +1,31 @@
++/* SPDX-License-Identifier: GPL-2.0-only
++Copyright (C) 2026 Handelsonderneming S.D. Broekhoven, trading as ITEagle Europe
++
++This program is free software; you can redistribute it and/or modify
++it under the terms of version 2 of the GNU General Public License as published by
++the Free Software Foundation
++
++
++This program is distributed in the hope that it will be useful,
++but WITHOUT ANY WARRANTY; without even the implied warranty of
++MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++GNU General Public License for more details. */
++
++#ifndef SE_INCL_RTGL1LOADER_H
++#define SE_INCL_RTGL1LOADER_H
++#ifdef PRAGMA_ONCE
++  #pragma once
++#endif
++
++// Runtime-optional ray tracing: the engine links RayTracedGL1 as a delay-loaded
++// DLL (Windows), so Engine.dll starts without it. Every path into an rg*() call
++// must first check RTGL1_IsAvailable(); the conventional raster APIs never do.
++
++// Returns TRUE if the RayTracedGL1 library can be loaded and all its imports
++// resolve. The result is cached after the first call.
++BOOL RTGL1_IsAvailable(void);
++
++// Short human-readable reason why RTGL1_IsAvailable() returned FALSE.
++const char *RTGL1_UnavailableReason(void);
++
++#endif // SE_INCL_RTGL1LOADER_H
