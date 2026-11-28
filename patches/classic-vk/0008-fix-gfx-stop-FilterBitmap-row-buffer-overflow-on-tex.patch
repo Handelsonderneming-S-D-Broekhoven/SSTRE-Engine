@@ -1,0 +1,128 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Fri, 27 Nov 2026 23:29:48 +0100
+Subject: [PATCH] fix(gfx): stop FilterBitmap row buffer overflow on textures
+ wider than 2048 px
+
+FilterBitmap() keeps one filtered row in the static aulRows[2048] array and
+advances through it for every texel of the row. Textures wider than 2048 px
+(e.g. 4096x4096 high-resolution replacements) were filtered at load time
+whenever tex_iFiltering != 0 (default -2 via Scripts/GLSettings/Initial.ini),
+which wrote past the end of aulRows, corrupted neighbouring engine globals
+and crashed the next texture-stock lookup with an access violation, in both
+the Vulkan and the OpenGL renderer.
+
+Enlarge the row buffer to 16384 texels and leave wider bitmaps unfiltered
+(one console message) instead of overflowing it. Applied to the TFE and TSE
+engine trees (identical code).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ SamTFE/Sources/Engine/Graphics/Graphics.cpp | 27 ++++++++++++++++++++-
+ SamTSE/Sources/Engine/Graphics/Graphics.cpp | 27 ++++++++++++++++++++-
+ 2 files changed, 52 insertions(+), 2 deletions(-)
+
+diff --git a/SamTFE/Sources/Engine/Graphics/Graphics.cpp b/SamTFE/Sources/Engine/Graphics/Graphics.cpp
+index 619510b64ba7403b82f0fc5d62fd1a61c8b4a40d..67eb6847d9a56958ca34549c0b848d80265c2c94 100644
+--- a/SamTFE/Sources/Engine/Graphics/Graphics.cpp
++++ b/SamTFE/Sources/Engine/Graphics/Graphics.cpp
+@@ -16,6 +16,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #include "Engine/StdH.h"
+ 
+ #include <Engine/Base/Statistics_Internal.h>
++#include <Engine/Base/Console.h> // SSTRE (EXP-016): CPrintF
+ #include <Engine/Graphics/GfxLibrary.h>
+ #include <Engine/Graphics/RenderPoly.h>
+ #include <Engine/Graphics/Color.h>
+@@ -1222,7 +1223,18 @@ __int64 mmAdd = 0x0007000700070007;
+ #endif
+ 
+ // temp rows for in-place filtering support
+-extern "C" { ULONG aulRows[2048]; }
++/* SSTRE modification (EXP-016), 2026-11-27:
++   Copyright (C) 2026 Handelsonderneming S.D. Broekhoven, trading as ITEagle Europe
++   SPDX-License-Identifier: GPL-2.0-only
++
++   FilterBitmap() keeps one filtered row in aulRows and walks it across the full
++   bitmap width. The array held 2048 texels, so any texture wider than 2048 px
++   overflowed it while being filtered (tex_iFiltering!=0) during load and
++   corrupted neighbouring globals (access violation on 4096-px-wide textures).
++   The buffer now holds FILTERROWS_MAX texels and wider bitmaps are left
++   unfiltered instead of overflowing it. */
++#define FILTERROWS_MAX 16384
++extern "C" { ULONG aulRows[FILTERROWS_MAX]; }
+ 
+ // FilterBitmap() INTERNAL: generates convolution filter matrix if needed
+ static INDEX iLastFilter;
+@@ -1361,6 +1373,19 @@ void FilterBitmap( INDEX iFilter, ULONG *pulSrc, ULONG *pulDst, PIX pixWidth, PI
+     return;
+   }
+ 
++  // SSTRE (EXP-016): row buffer holds FILTERROWS_MAX texels; never overflow it
++  if( pixWidth>FILTERROWS_MAX)
++  { // leave unfiltered, but eventually copy
++    static BOOL bReported = FALSE;
++    if( !bReported) {
++      CPrintF( "FilterBitmap: %d px wide bitmap not filtered (limit %d)\n", pixWidth, FILTERROWS_MAX);
++      bReported = TRUE;
++    }
++    if( pulDst!=pulSrc) memcpy( pulDst, pulSrc, pixCanvasWidth*pixCanvasHeight *BYTES_PER_TEXEL);
++    _pfGfxProfile.StopTimer( CGfxProfile::PTI_FILTERBITMAP);
++    return;
++  }
++
+   // prepare convolution matrix and row modulo
+   iFilter = Clamp( iFilter, (INDEX)-6, (INDEX)6);
+   GenerateConvolutionMatrix( iFilter);
+diff --git a/SamTSE/Sources/Engine/Graphics/Graphics.cpp b/SamTSE/Sources/Engine/Graphics/Graphics.cpp
+index 61429ea8f16334a74373cac41f2d24d6fd737e35..7e74eb3bd71709d5f17ec6329a10ae4a3cadb0f2 100644
+--- a/SamTSE/Sources/Engine/Graphics/Graphics.cpp
++++ b/SamTSE/Sources/Engine/Graphics/Graphics.cpp
+@@ -16,6 +16,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #include "Engine/StdH.h"
+ 
+ #include <Engine/Base/Statistics_Internal.h>
++#include <Engine/Base/Console.h> // SSTRE (EXP-016): CPrintF
+ #include <Engine/Graphics/GfxLibrary.h>
+ #include <Engine/Graphics/RenderPoly.h>
+ #include <Engine/Graphics/Color.h>
+@@ -1222,7 +1223,18 @@ __int64 mmAdd = 0x0007000700070007;
+ #endif
+ 
+ // temp rows for in-place filtering support
+-extern "C" { ULONG aulRows[2048]; }
++/* SSTRE modification (EXP-016), 2026-11-27:
++   Copyright (C) 2026 Handelsonderneming S.D. Broekhoven, trading as ITEagle Europe
++   SPDX-License-Identifier: GPL-2.0-only
++
++   FilterBitmap() keeps one filtered row in aulRows and walks it across the full
++   bitmap width. The array held 2048 texels, so any texture wider than 2048 px
++   overflowed it while being filtered (tex_iFiltering!=0) during load and
++   corrupted neighbouring globals (access violation on 4096-px-wide textures).
++   The buffer now holds FILTERROWS_MAX texels and wider bitmaps are left
++   unfiltered instead of overflowing it. */
++#define FILTERROWS_MAX 16384
++extern "C" { ULONG aulRows[FILTERROWS_MAX]; }
+ 
+ // FilterBitmap() INTERNAL: generates convolution filter matrix if needed
+ static INDEX iLastFilter;
+@@ -1361,6 +1373,19 @@ void FilterBitmap( INDEX iFilter, ULONG *pulSrc, ULONG *pulDst, PIX pixWidth, PI
+     return;
+   }
+ 
++  // SSTRE (EXP-016): row buffer holds FILTERROWS_MAX texels; never overflow it
++  if( pixWidth>FILTERROWS_MAX)
++  { // leave unfiltered, but eventually copy
++    static BOOL bReported = FALSE;
++    if( !bReported) {
++      CPrintF( "FilterBitmap: %d px wide bitmap not filtered (limit %d)\n", pixWidth, FILTERROWS_MAX);
++      bReported = TRUE;
++    }
++    if( pulDst!=pulSrc) memcpy( pulDst, pulSrc, pixCanvasWidth*pixCanvasHeight *BYTES_PER_TEXEL);
++    _pfGfxProfile.StopTimer( CGfxProfile::PTI_FILTERBITMAP);
++    return;
++  }
++
+   // prepare convolution matrix and row modulo
+   iFilter = Clamp( iFilter, (INDEX)-6, (INDEX)6);
+   GenerateConvolutionMatrix( iFilter);

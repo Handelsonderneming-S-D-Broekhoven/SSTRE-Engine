@@ -1,0 +1,114 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Fri, 27 Nov 2026 21:34:00 +0100
+Subject: [PATCH] rt(entities): port the TFE RT entity hooks (flashlight, HUD,
+ weapon render)
+
+RT-marked hunks of Serious-Engine-RT for Entities/Player.es,
+PlayerWeapons.es and Common/HUD.cpp (applied cleanly), plus the
+declarations that the hunk filter had dropped: ctl_bFlashlight and
+hud_bShowFlashlightHint with their shell symbols.
+
+SSTRE change: Player's per-tick BodyRemoveItem() (added by RT next to
+the flashlight toggle) now runs only when the current API is GAT_RT, so
+raster gameplay is unchanged.
+
+Ported code: Serious-Engine-RT (https://github.com/sultim-t/Serious-Engine-RT,
+GPL-2.0-only) by Sultim Tsyrendashiev; original copyright notices kept.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ SamTFE/Sources/Entities/Common/HUD.cpp   | 19 +++++++++++++++++++
+ SamTFE/Sources/Entities/Player.es        | 24 ++++++++++++++++++++++++
+ SamTFE/Sources/Entities/PlayerWeapons.es | 10 ++++++++--
+ 3 files changed, 51 insertions(+), 2 deletions(-)
+
+diff --git a/SamTFE/Sources/Entities/Common/HUD.cpp b/SamTFE/Sources/Entities/Common/HUD.cpp
+index a1e1458d1911c4f8b1645a37073b49cdca93e452..e1efe9215bd3e31728a68683d4c2dc9e4dec2466 100644
+--- a/SamTFE/Sources/Entities/Common/HUD.cpp
++++ b/SamTFE/Sources/Entities/Common/HUD.cpp
+@@ -62,2 +62,5 @@ extern FLOAT hud_fScaling;
+ extern FLOAT hud_tmWeaponsOnScreen;
++
++// RT: flashlight hint (from Serious-Engine-RT)
++extern INDEX hud_bShowFlashlightHint = 0;
+ extern INDEX hud_bWeaponsIconScale; // HUD weapons icons scale: 0 - small, 1 - big
+@@ -1082,2 +1085,15 @@ extern void DrawHUD( const CPlayer *penPlayerCurrent, CDrawPort *pdpCurrent, BOO
+   }
++
++  // RT: show
++  if (_pGfx->gl_eCurrentAPI == GfxAPIType::GAT_RT && hud_bShowFlashlightHint)
++  {
++    bool isColored = (INDEX)(_pTimer->GetLerpedCurrentTick() * 2.0f) % 2;
++    CTString strFlashlightHint = isColored ? "Press a ^c24D500Flashlight^r button to toggle it" : "Press a Flashlight button to toggle it";
++    _pfdDisplayFont->SetVariableWidth();
++    _pDP->SetFont(_pfdDisplayFont);
++    _pDP->SetTextScaling(_fResolutionScaling * hud_fScaling * 2.0f);
++    _pDP->SetTextCharSpacing(1);
++    _pDP->PutTextCXY(strFlashlightHint, _pixDPWidth * 0.5f, _pixDPHeight * 0.65f, C_WHITE | CT_OPAQUE);
++  }
++
+   // restore font defaults
+@@ -1200,2 +1216,5 @@ extern void InitHUD(void)
+ {
++  // RT: ugly way
++  _pShell->DeclareSymbol("INDEX hud_bShowFlashlightHint;", (void *) &hud_bShowFlashlightHint);
++
+   // try to
+diff --git a/SamTFE/Sources/Entities/Player.es b/SamTFE/Sources/Entities/Player.es
+index 6edf4c6153f98fc14af28a00498e9b3e515d9367..9f3703a33c7813b442fee17ec557602e2a9a4941 100644
+--- a/SamTFE/Sources/Entities/Player.es
++++ b/SamTFE/Sources/Entities/Player.es
+@@ -415,2 +415,5 @@ static FLOAT ctl_fAxisStrafingModifier = 1.0f;
+ 
++// RT: flashlight
++static INDEX ctl_bFlashlight = 0;
++
+ // !=NULL if some player wants to call computer
+@@ -680,2 +683,5 @@ void CPlayer_OnInitClass(void)
+ 
++  // RT: flashlight
++  _pShell->DeclareSymbol("user INDEX ctl_bFlashlight;", (void *) &ctl_bFlashlight);
++
+   _pShell->DeclareSymbol("user FLOAT plr_fSwimSoundDelay;", &plr_fSwimSoundDelay);
+@@ -3258,2 +3264,20 @@ functions:
+     }
++    
++    if ((GetFlags() & ENF_ALIVE) && m_penActionMarker==NULL)
++    {
++      // RT: flashlight enable/disable, only if alive and not in cutscene
++      _pShell->SetINDEX("srt_bFlashlightEnable", ctl_bFlashlight);
++      
++      // SSTRE: only under ray tracing, so raster gameplay stays unchanged
++      if (_pGfx->gl_eCurrentAPI == GAT_RT) {
++        CPlayerAnimator &plan = (CPlayerAnimator&)*m_penAnimator;
++        plan.BodyRemoveItem();
++      }
++    }
++    else
++    {
++      // RT: flashlight must be disabled otherwise
++      _pShell->SetINDEX("srt_bFlashlightEnable", 0);
++      ctl_bFlashlight = 0;
++    }
+ 
+diff --git a/SamTFE/Sources/Entities/PlayerWeapons.es b/SamTFE/Sources/Entities/PlayerWeapons.es
+index 5f0a29aa6adf3b01894d0eb2a86e7663b9258d78..781d43fa254a240c663952e2a97b22b1f3b81795 100644
+--- a/SamTFE/Sources/Entities/PlayerWeapons.es
++++ b/SamTFE/Sources/Entities/PlayerWeapons.es
+@@ -864,3 +864,6 @@ functions:
+       WeaponMovingOffset(plWeaponMirror.pl_PositionVector);
+-      plWeaponMirror.RelativeToAbsoluteSmooth(plView);
++      if (_pGfx->gl_eCurrentAPI != GAT_RT) 
++      {
++        plWeaponMirror.RelativeToAbsoluteSmooth(plView);
++      }
+       rmMain.SetObjectPlacement(plWeaponMirror);
+@@ -894,3 +897,6 @@ functions:
+     WeaponMovingOffset(plWeapon.pl_PositionVector);
+-    plWeapon.RelativeToAbsoluteSmooth(plView);
++    if (_pGfx->gl_eCurrentAPI != GAT_RT) 
++    { 
++      plWeapon.RelativeToAbsoluteSmooth(plView);
++    }
+     rmMain.SetObjectPlacement(plWeapon);

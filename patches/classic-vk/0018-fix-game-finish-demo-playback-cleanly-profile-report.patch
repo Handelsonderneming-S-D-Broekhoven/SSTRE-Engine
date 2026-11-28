@@ -1,0 +1,122 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Fri, 27 Nov 2026 22:07:39 +0100
+Subject: [PATCH] fix(game): finish demo playback cleanly (profile report,
+ post-exec)
+
+Two defects kept dem_bProfile / dem_strPostExec from ever producing output
+(SSTRE EXP-001, EXP-011):
+
+1. A quickload request recorded in a demo (the player entity sets
+   gam_bQuickLoad when a dead single player presses fire) made
+   GameMainLoop() call JoinGame("serveraddress") during playback. That
+   stopped the demo without the demo-finished handling ("stopping game.",
+   "Joining session at: serveraddress"). It is now treated as the end of the
+   demo (ga_bDemoPlayFinished).
+2. The profile report and dem_strPostExec ran only inside GameRedrawView()
+   when it observed a finished demo, but the main loop stops a finished
+   demo first. CGame::StopGame() now prints the report and runs the
+   post-exec command for a finished demo.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ SamTFE/Sources/GameMP/Game.cpp | 22 +++++++++++++++++++++-
+ SamTSE/Sources/GameMP/Game.cpp | 22 +++++++++++++++++++++-
+ 2 files changed, 42 insertions(+), 2 deletions(-)
+
+diff --git a/SamTFE/Sources/GameMP/Game.cpp b/SamTFE/Sources/GameMP/Game.cpp
+index 025a6e92ead400fac85b49a53510e64d70a6715f..02d027cf10e8e498575252108308533e0bf37caf 100644
+--- a/SamTFE/Sources/GameMP/Game.cpp
++++ b/SamTFE/Sources/GameMP/Game.cpp
+@@ -1714,6 +1714,15 @@ void CGame::StopGame(void)
+     // do nothing
+     return;
+   }
++  // SSTRE: the demo profile report and dem_strPostExec used to run only inside GameRedrawView(),
++  // and only when it saw a finished demo. The main loop stops a finished demo (StopGame) before
++  // a redraw observes that state, so the report was never printed. Finish them here too.
++  const BOOL bDemoFinished = _pNetwork->IsDemoPlayFinished();
++  if (bDemoFinished && gm_bProfileDemo) {
++    gm_bProfileDemo = FALSE;
++    CPrintF("%s", (const char *) DemoReportAnalyzedProfile());
++    CPrintF("-\n");
++  }
+   // stop eventual camera
+   CAM_Stop();
+   // disable direct input
+@@ -1731,6 +1740,10 @@ void CGame::StopGame(void)
+     gm_lpLocalPlayers[ iPlayer].lp_bActive = FALSE;
+     gm_lpLocalPlayers[ iPlayer].lp_pplsPlayerSource = NULL;
+   }
++  // SSTRE: execute the after-demo command (e.g. DumpDemoProfile(); Quit();) for a finished demo
++  if (bDemoFinished && dem_strPostExec!="") {
++    _pShell->Execute(dem_strPostExec);
++  }
+ }
+ 
+ BOOL CGame::StartProviderFromName(void)
+@@ -3075,8 +3088,15 @@ void CGame::GameMainLoop(void)
+   // if quickload invoked
+   if (gam_bQuickLoad && GetSP()->sp_gmGameMode!=CSessionProperties::GM_FLYOVER) {
+     gam_bQuickLoad = FALSE;
++    // SSTRE: a quickload request recorded in a demo (the player entity sets gam_bQuickLoad when a
++    // dead single-player presses fire) is the end of the recording. It used to call JoinGame() on
++    // 'serveraddress', which stopped playback without the demo-finished handling (profile report,
++    // dem_strPostExec). Treat it as the end of the demo instead.
++    if (gm_bGameOn && _pNetwork->IsPlayingDemo()) {
++      CPrintF("Demo playback: recorded quickload request, ending demo.\n");
++      _pNetwork->ga_bDemoPlayFinished = TRUE;
+     // if no game active, or this computer is server
+-    if (!gm_bGameOn || _pNetwork->IsServer()) {
++    } else if (!gm_bGameOn || _pNetwork->IsServer()) {
+       // do a quickload
+       LoadGame(GetQuickSaveName(FALSE));
+     // otherwise
+diff --git a/SamTSE/Sources/GameMP/Game.cpp b/SamTSE/Sources/GameMP/Game.cpp
+index dcdf72f2d7f51a4156c44bf35574d8e863d7db81..ce00d6e8ba5d8f7fc002cbe18e8083c041c1e6c2 100644
+--- a/SamTSE/Sources/GameMP/Game.cpp
++++ b/SamTSE/Sources/GameMP/Game.cpp
+@@ -1471,6 +1471,15 @@ void CGame::StopGame(void)
+     // do nothing
+     return;
+   }
++  // SSTRE: the demo profile report and dem_strPostExec used to run only inside GameRedrawView(),
++  // and only when it saw a finished demo. The main loop stops a finished demo (StopGame) before
++  // a redraw observes that state, so the report was never printed. Finish them here too.
++  const BOOL bDemoFinished = _pNetwork->IsDemoPlayFinished();
++  if (bDemoFinished && gm_bProfileDemo) {
++    gm_bProfileDemo = FALSE;
++    CPrintF("%s", (const char *) DemoReportAnalyzedProfile());
++    CPrintF("-\n");
++  }
+   // stop eventual camera
+   CAM_Stop();
+   // disable direct input
+@@ -1488,6 +1497,10 @@ void CGame::StopGame(void)
+     gm_lpLocalPlayers[ iPlayer].lp_bActive = FALSE;
+     gm_lpLocalPlayers[ iPlayer].lp_pplsPlayerSource = NULL;
+   }
++  // SSTRE: execute the after-demo command (e.g. DumpDemoProfile(); Quit();) for a finished demo
++  if (bDemoFinished && dem_strPostExec!="") {
++    _pShell->Execute(dem_strPostExec);
++  }
+ }
+ 
+ BOOL CGame::StartProviderFromName(void)
+@@ -2832,8 +2845,15 @@ void CGame::GameMainLoop(void)
+   // if quickload invoked
+   if (gam_bQuickLoad && GetSP()->sp_gmGameMode!=CSessionProperties::GM_FLYOVER) {
+     gam_bQuickLoad = FALSE;
++    // SSTRE: a quickload request recorded in a demo (the player entity sets gam_bQuickLoad when a
++    // dead single-player presses fire) is the end of the recording. It used to call JoinGame() on
++    // 'serveraddress', which stopped playback without the demo-finished handling (profile report,
++    // dem_strPostExec). Treat it as the end of the demo instead.
++    if (gm_bGameOn && _pNetwork->IsPlayingDemo()) {
++      CPrintF("Demo playback: recorded quickload request, ending demo.\n");
++      _pNetwork->ga_bDemoPlayFinished = TRUE;
+     // if no game active, or this computer is server
+-    if (!gm_bGameOn || _pNetwork->IsServer()) {
++    } else if (!gm_bGameOn || _pNetwork->IsServer()) {
+       // do a quickload
+       LoadGame(GetQuickSaveName(FALSE));
+     // otherwise

@@ -1,0 +1,143 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: lethalbas <lethalbas@gmail.com>
+Date: Fri, 27 Nov 2026 21:27:33 +0100
+Subject: [PATCH] feat(bench): add +demo command-line option for benchmark
+ playback
+
+Start a single demo file from the command line after the display mode is
+set, the same way the auto-play loop starts demos (observer, local
+provider). +script runs before the menus initialise, so a PlayDemo() call
+there is stopped again, and the shell PlayDemo(CTString) argument passing
+is broken on x64. This gives an input-free, deterministic benchmark start
+(SSTRE POC-28). On failure the main menu starts as before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ SamTFE/Sources/SeriousSam/CmdLine.cpp    |  3 +++
+ SamTFE/Sources/SeriousSam/CmdLine.h      |  1 +
+ SamTFE/Sources/SeriousSam/SeriousSam.cpp | 16 ++++++++++++++++
+ SamTSE/Sources/SeriousSam/CmdLine.cpp    |  3 +++
+ SamTSE/Sources/SeriousSam/CmdLine.h      |  1 +
+ SamTSE/Sources/SeriousSam/SeriousSam.cpp | 16 ++++++++++++++++
+ 6 files changed, 40 insertions(+)
+
+diff --git a/SamTFE/Sources/SeriousSam/CmdLine.cpp b/SamTFE/Sources/SeriousSam/CmdLine.cpp
+index 446ab0701ab858c141678e4fc9051e9a4e88ec41..4b6ddddf0153dc5b9f6ca10019f5b7e1c983ae20 100644
+--- a/SamTFE/Sources/SeriousSam/CmdLine.cpp
++++ b/SamTFE/Sources/SeriousSam/CmdLine.cpp
+@@ -19,6 +19,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #include "CmdLine.h"
+ 
+ CTString cmd_strWorld = "";  // world to load
++CTString cmd_strDemo = "";   // demo to play (SSTRE: deterministic benchmark playback)
+ INDEX cmd_iGoToMarker = -1;  // marker to go to
+ CTString cmd_strScript = ""; // script to execute
+ CTString cmd_strServer = ""; // server to connect to
+@@ -107,6 +108,8 @@ void ParseCommandLine(CTString strCmd)
+       return;
+     } else if (strWord=="+level") {
+       cmd_strWorld = GetNextParam();
++    } else if (strWord=="+demo") {
++      cmd_strDemo = GetNextParam();
+     } else if (strWord=="+server") {
+       cmd_bServer = TRUE;
+     } else if (strWord=="+quickjoin") {
+diff --git a/SamTFE/Sources/SeriousSam/CmdLine.h b/SamTFE/Sources/SeriousSam/CmdLine.h
+index a74e37df131a41a0b7845429f12dbd93ac7d43f2..a10410944e2f40aabd54cac9fa9249440b64c783 100644
+--- a/SamTFE/Sources/SeriousSam/CmdLine.h
++++ b/SamTFE/Sources/SeriousSam/CmdLine.h
+@@ -20,6 +20,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #endif
+ 
+ extern CTString cmd_strWorld;       // world to load
++extern CTString cmd_strDemo;        // demo to play (SSTRE)
+ extern INDEX cmd_iGoToMarker;       // marker to go to
+ extern CTString cmd_strScript;      // script to execute
+ extern CTString cmd_strServer;      // server to connect to
+diff --git a/SamTFE/Sources/SeriousSam/SeriousSam.cpp b/SamTFE/Sources/SeriousSam/SeriousSam.cpp
+index 257d40abaf54e8051b576cfecb4f496a3c96488f..bc241240ddc9c0248d64a00030237bc78e0230f2 100644
+--- a/SamTFE/Sources/SeriousSam/SeriousSam.cpp
++++ b/SamTFE/Sources/SeriousSam/SeriousSam.cpp
+@@ -907,6 +907,22 @@ BOOL Init( HINSTANCE hInstance, int nCmdShow, CTString strCmdLine)
+     } catch (const char *strError) {
+       CPrintF(TRANSV("Cannot start '%s': '%s'\n"), (const char *) cmd_strWorld, (const char *) strError);
+     }
++  // if playing a demo from command line (SSTRE: benchmark playback without menus or input)
++  } else if (cmd_strDemo!="") {
++    CPrintF("Command line demo: '%s'\n", (const char *) cmd_strDemo);
++    _pGame->gm_StartSplitScreenCfg = CGame::SSC_OBSERVER;
++    _pGame->gm_aiStartLocalPlayers[0] = -1;
++    _pGame->gm_aiStartLocalPlayers[1] = -1;
++    _pGame->gm_aiStartLocalPlayers[2] = -1;
++    _pGame->gm_aiStartLocalPlayers[3] = -1;
++    _pGame->gm_strNetworkProvider = "Local";
++    _gmRunningGameMode = GM_NONE;
++    if (_pGame->StartDemoPlay(cmd_strDemo)) {
++      _gmRunningGameMode = GM_DEMO;
++      CON_DiscardLastLineTimes();
++    } else {
++      StartMenus();
++    }
+   // if no relevant starting at command line
+   } else {
+     // RT: no auto-demos under ray tracing (SSTRE: runtime check instead of SE1_RAYTRACING)
+diff --git a/SamTSE/Sources/SeriousSam/CmdLine.cpp b/SamTSE/Sources/SeriousSam/CmdLine.cpp
+index 446ab0701ab858c141678e4fc9051e9a4e88ec41..4b6ddddf0153dc5b9f6ca10019f5b7e1c983ae20 100644
+--- a/SamTSE/Sources/SeriousSam/CmdLine.cpp
++++ b/SamTSE/Sources/SeriousSam/CmdLine.cpp
+@@ -19,6 +19,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #include "CmdLine.h"
+ 
+ CTString cmd_strWorld = "";  // world to load
++CTString cmd_strDemo = "";   // demo to play (SSTRE: deterministic benchmark playback)
+ INDEX cmd_iGoToMarker = -1;  // marker to go to
+ CTString cmd_strScript = ""; // script to execute
+ CTString cmd_strServer = ""; // server to connect to
+@@ -107,6 +108,8 @@ void ParseCommandLine(CTString strCmd)
+       return;
+     } else if (strWord=="+level") {
+       cmd_strWorld = GetNextParam();
++    } else if (strWord=="+demo") {
++      cmd_strDemo = GetNextParam();
+     } else if (strWord=="+server") {
+       cmd_bServer = TRUE;
+     } else if (strWord=="+quickjoin") {
+diff --git a/SamTSE/Sources/SeriousSam/CmdLine.h b/SamTSE/Sources/SeriousSam/CmdLine.h
+index a74e37df131a41a0b7845429f12dbd93ac7d43f2..a10410944e2f40aabd54cac9fa9249440b64c783 100644
+--- a/SamTSE/Sources/SeriousSam/CmdLine.h
++++ b/SamTSE/Sources/SeriousSam/CmdLine.h
+@@ -20,6 +20,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
+ #endif
+ 
+ extern CTString cmd_strWorld;       // world to load
++extern CTString cmd_strDemo;        // demo to play (SSTRE)
+ extern INDEX cmd_iGoToMarker;       // marker to go to
+ extern CTString cmd_strScript;      // script to execute
+ extern CTString cmd_strServer;      // server to connect to
+diff --git a/SamTSE/Sources/SeriousSam/SeriousSam.cpp b/SamTSE/Sources/SeriousSam/SeriousSam.cpp
+index 9437bc452e0d41055e57e71196235d0a7afb811c..da515768b2e1733ccee473d95e933f31138e75c3 100644
+--- a/SamTSE/Sources/SeriousSam/SeriousSam.cpp
++++ b/SamTSE/Sources/SeriousSam/SeriousSam.cpp
+@@ -900,6 +900,22 @@ BOOL Init( HINSTANCE hInstance, int nCmdShow, CTString strCmdLine)
+     } catch (const char *strError) {
+       CPrintF(TRANSV("Cannot start '%s': '%s'\n"), (const char *) cmd_strWorld, (const char *) strError);
+     }
++  // if playing a demo from command line (SSTRE: benchmark playback without menus or input)
++  } else if (cmd_strDemo!="") {
++    CPrintF("Command line demo: '%s'\n", (const char *) cmd_strDemo);
++    _pGame->gm_StartSplitScreenCfg = CGame::SSC_OBSERVER;
++    _pGame->gm_aiStartLocalPlayers[0] = -1;
++    _pGame->gm_aiStartLocalPlayers[1] = -1;
++    _pGame->gm_aiStartLocalPlayers[2] = -1;
++    _pGame->gm_aiStartLocalPlayers[3] = -1;
++    _pGame->gm_strNetworkProvider = "Local";
++    _gmRunningGameMode = GM_NONE;
++    if (_pGame->StartDemoPlay(cmd_strDemo)) {
++      _gmRunningGameMode = GM_DEMO;
++      CON_DiscardLastLineTimes();
++    } else {
++      StartMenus();
++    }
+   // if no relevant starting at command line
+   } else {
+     StartNextDemo();
