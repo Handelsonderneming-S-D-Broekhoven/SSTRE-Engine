@@ -32,6 +32,6 @@ Exported with 1 line of context (`--flagged-context 1`, ADR-0008 item 4). A flag
 | 0013 | `SamTFE/Sources/Entities/Common/HUD.cpp` | H6, TFE Entities of unclear provenance | RT hooks | lead, 2026-11-28 |
 | 0013 | `SamTFE/Sources/Entities/Player.es` | H6 | flashlight toggle, RT-only `BodyRemoveItem()` | lead, 2026-11-28 |
 | 0013 | `SamTFE/Sources/Entities/PlayerWeapons.es` | H6 | first-person weapon render flag | lead, 2026-11-28 |
-| 0015 | `SamTFE/Scripts/Menu/RenderingOptions.cfg` | G4, retail-identical scripts | one `Include:` line; the RT options live in the new SSTRE file `SamTFE/SSTRE/Menu/RenderingOptionsRT.cfg` | pending |
-| 0024 | `SamTSE/Scripts/Menu/RenderingOptions.cfg` | G4 | one `Include:` line (`SamTSE/SSTRE/Menu/RenderingOptionsRT.cfg`) | pending |
-| 0027 | `SamTSE/Controls/00-Default.ctl` | G4, retail-identical controls | +7 lines: "Flashlight" button on L (the controls parser has no include) | pending |
+| 0015 | `SamTFE/Scripts/Menu/RenderingOptions.cfg` | G4, retail-identical scripts | one `Include:` line; the RT options live in the new SSTRE file `SamTFE/SSTRE/Menu/RenderingOptionsRT.cfg` | lead, 2026-11-28 |
+| 0024 | `SamTSE/Scripts/Menu/RenderingOptions.cfg` | G4 | one `Include:` line (`SamTSE/SSTRE/Menu/RenderingOptionsRT.cfg`) | lead, 2026-11-28 |
+| 0027 | `SamTSE/Controls/00-Default.ctl` | G4, retail-identical controls | +7 lines: "Flashlight" button on L (the controls parser has no include) | lead, 2026-11-28 |
