@@ -459,6 +459,63 @@ class TestRoundTrip(Base):
                             "--allow-signoff", "--allow-flagged", "--verify")
         self.assertEqual(rc, 0, out)
 
+    def _flagged_series(self):
+        """Two commits; the second changes the middle line of an 11-line flagged
+        file and of an 11-line ordinary file."""
+        ten = [f"line {k}" for k in range(1, 12)]
+        write(self.up, "Sources/Entities/Enemy.es", "\n".join(["enemy"] + ten[1:]) + "\n")
+        write(self.up, "src/long.c", "\n".join(ten) + "\n")
+        commit(self.up, "prepare long files")
+        ten[5] = "line 6 changed"
+        write(self.up, "Sources/Entities/Enemy.es", "\n".join(["enemy"] + ten[1:]) + "\n")
+        write(self.up, "src/long.c", "\n".join(ten) + "\n")
+        commit(self.up, "change line 6")
+
+    @staticmethod
+    def _contexts(patch: bytes) -> dict[str, int]:
+        return {fc.paths()[0]: fc.context for fc in sp.parse_patch(patch).files}
+
+    def test_flagged_files_get_minimal_context(self):
+        self.assertEqual(self.fetch()[0], 0)
+        self._flagged_series()
+        base = ["--root", str(self.root), "--cache", str(self.cache), "export", "eng",
+                "--from", self.branch, "--source-repo", str(self.up), "--allow-flagged"]
+        rc, out = self.main(*base, "--verify")                       # default --flagged-context 1
+        self.assertEqual(rc, 0, out)
+        self.assertIn("round trip ok", out)
+        self.assertIn("Sources/Entities/Enemy.es (context 1)", out)
+        last_path = sorted((self.root / "patches/eng").iterdir())[-1]
+        last = last_path.read_bytes()
+        self.assertEqual(self._contexts(last), {"Sources/Entities/Enemy.es": 1, "src/long.c": 3})
+        self.assertIn(b" src/long.c", last)                           # diffstat kept
+        rep = sp.CheckReport()
+        sp.check_patch_file(last_path, sp.CheckOptions(allow_flagged=True), rep)
+        self.assertTrue(any("1 context line(s)" in w for w in rep.warnings), rep.warnings)
+        # --flagged-context 3 (= --unified) disables the rule; check then hints at minimal context
+        rc, out = self.main(*base, "--flagged-context", "3", "--verify")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("prefer 1 line of context", out)
+        last = sorted((self.root / "patches/eng").iterdir())[-1].read_bytes()
+        self.assertEqual(self._contexts(last)["Sources/Entities/Enemy.es"], 3)
+
+    def test_path_context_rule(self):
+        self.assertEqual(self.fetch()[0], 0)
+        self._flagged_series()
+        rc, out = self.main("--root", str(self.root), "--cache", str(self.cache), "export", "eng",
+                            "--from", self.branch, "--source-repo", str(self.up), "--allow-flagged",
+                            "--path-context", "src/*.c=2", "--verify")
+        self.assertEqual(rc, 0, out)
+        self.assertIn("round trip ok", out)
+        last = sorted((self.root / "patches/eng").iterdir())[-1].read_bytes()
+        self.assertEqual(self._contexts(last), {"Sources/Entities/Enemy.es": 1, "src/long.c": 2})
+        for bad in ("src/*.c", "=2", "src/*.c=0", "src/*.c=x"):
+            rc, out = self.main("--root", str(self.root), "export", "eng", "--from", self.branch,
+                                "--source-repo", str(self.up), "--path-context", bad)
+            self.assertEqual(rc, 2, (bad, out))
+        rc, out = self.main("--root", str(self.root), "export", "eng", "--from", self.branch,
+                            "--source-repo", str(self.up), "--flagged-context", "0")
+        self.assertEqual(rc, 2, out)
+
     def test_check_cli_on_series_and_unknown_dir(self):
         self.assertEqual(self.fetch()[0], 0)
         self.assertEqual(self.main("--root", str(self.root), "export", "eng", "--from", self.branch,
